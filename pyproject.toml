@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentflow"
+version = "0.1.0"
+description = "A plan, execute, test, critique, and recover agent workflow"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "github-copilot-sdk",
+    "PyYAML",
+]
+
+[project.scripts]
+agentflow = "agentflow.controller:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+asyncio_default_fixture_loop_scope = "function"
