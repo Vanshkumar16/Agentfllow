@@ -1,30 +1,34 @@
-"""Print task-level outcomes and iteration counts."""
+"""Print an easy-to-scan comparison table from JSONL experiment results."""
 
 from __future__ import annotations
 
 import argparse
-import json
 from pathlib import Path
+
+if __package__:
+    from .evaluate import evaluate
+else:
+    from evaluate import evaluate
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("results", nargs="?", type=Path, default=Path("results/latest.jsonl"))
     args = parser.parse_args()
-    with args.results.open(encoding="utf-8") as result_file:
-        for line_number, line in enumerate(result_file, start=1):
-            if not line.strip():
-                continue
-            try:
-                result = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"Invalid JSON on line {line_number}: {exc}") from exc
-            status = "complete" if result.get("complete") is True else "incomplete"
-            print(
-                f"{result.get('task_id', line_number)}: {status}; "
-                f"{len(result.get('iterations', []))} iteration(s); "
-                f"{result.get('summary', '')}"
-            )
+    report = evaluate(args.results)
+    if not report["runs"]:
+        print("No completed task records are present in this results file.")
+    for row in report["runs"]:
+        print(
+            f"{row['model']} | {row['strategy']} | "
+            f"resolved={row['resolved']}/{row['tasks']} "
+            f"({row['resolution_rate']:.1%}) | tests={row['test_pass_rate']:.1%} | "
+            f"repairs={row['mean_repair_attempts']:.2f} | "
+            f"latency={row['mean_latency_seconds']}s | "
+            f"tokens={row['mean_tokens_used']}"
+        )
+    for row in report["skipped_models"]:
+        print(f"Skipped model {row['model']}: {row['reason']}")
 
 
 if __name__ == "__main__":

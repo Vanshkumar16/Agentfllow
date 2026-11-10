@@ -5,16 +5,17 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agentflow"
 version = "0.1.0"
-description = "A plan, execute, test, critique, and recover agent workflow"
+description = "Budget-aware recovery for local software engineering agents"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = [
-    "github-copilot-sdk",
-    "PyYAML",
-]
+dependencies = ["PyYAML"]
+
+[project.optional-dependencies]
+copilot = ["github-copilot-sdk"]
+test = ["pytest", "pytest-asyncio"]
 
 [project.scripts]
-agentflow = "agentflow.controller:main"
+agentflow = "agentflow.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,18 +1,10 @@
-"""CLI and orchestration for the plan/execute/test/critique/recover loop."""
+"""Compatibility controller for the original tool-only AgentFlow API."""
 
 from __future__ import annotations
 
-import argparse
-import asyncio
-import json
-from pathlib import Path
-from typing import Any
-
-import yaml
-
 from .critic import Critic
 from .executor import Executor
-from .model import CopilotModel, TextModel
+from .model import TextModel
 from .planner import Planner
 from .recovery import Recovery
 from .schemas import IterationResult, RunResult, TaskRequest
@@ -57,61 +49,10 @@ class AgentController:
         summary = history[-1].critique.feedback if history else "No iteration was completed."
         return RunResult(request.goal, False, history, summary)
 
-
-def _load_config(path: Path) -> dict[str, Any]:
-    try:
-        with path.open(encoding="utf-8") as file:
-            config = yaml.safe_load(file)
-    except OSError as exc:
-        raise RuntimeError(f"Could not read config file '{path}': {exc}") from exc
-    if not isinstance(config, dict):
-        raise ValueError(f"Config file '{path}' must contain a YAML object.")
-    return config
-
-
-async def _run_cli(args: argparse.Namespace) -> int:
-    config = _load_config(args.config)
-    model = CopilotModel(args.model or str(config.get("model", "gpt-4.1")))
-    await model.start()
-    try:
-        controller = AgentController(
-            model,
-            max_iterations=(
-                args.max_iterations
-                if args.max_iterations is not None
-                else int(config.get("max_iterations", 3))
-            ),
-            retries_per_step=(
-                args.retries_per_step
-                if args.retries_per_step is not None
-                else int(config.get("retries_per_step", 1))
-            ),
-        )
-        result = await controller.run(TaskRequest(args.goal))
-        print(json.dumps(result.to_dict(), indent=2, default=str))
-        return 0 if result.complete else 1
-    finally:
-        await model.close()
-
-
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run an agentflow task.")
-    parser.add_argument("goal", help="Task for the agent to complete")
-    parser.add_argument(
-        "--config",
-        type=Path,
-        default=Path("configs/experiment.yaml"),
-        help="YAML settings file",
-    )
-    parser.add_argument("--model", help="Override the model configured in YAML")
-    parser.add_argument("--max-iterations", type=int)
-    parser.add_argument("--retries-per-step", type=int)
-    args = parser.parse_args()
-    try:
-        exit_code = asyncio.run(_run_cli(args))
-    except Exception as exc:
-        parser.exit(2, f"agentflow: {type(exc).__name__}: {exc}\n")
-    raise SystemExit(exit_code)
+    from .cli import main as coding_agent_main
+
+    coding_agent_main()
 
 
 if __name__ == "__main__":

@@ -1,4 +1,3 @@
-github-copilot-sdk
 PyYAML
 pytest
 pytest-asyncio
