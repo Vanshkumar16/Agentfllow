@@ -13,6 +13,56 @@ strategies:
 The pilot benchmark is a controlled set of 20 small Python bug-fixing tasks:
 five pilot tasks and 15 held-out tasks. SWE-bench Verified is not required.
 
+## Current readiness
+
+The configured `gemma4:e2b` model is installed and the 5-task pilot has been
+run across all three strategies. The measured pilot results are below. They
+are preliminary observations from only five small controlled tasks, not
+evidence of general performance.
+
+| Strategy | Resolved / tests passed | Mean repair attempts | Mean latency | Mean tokens |
+|---|---:|---:|---:|---:|
+| Single-shot | 4/5 (80%) | 0.00 | 11.56 s | 627.75* |
+| Fixed retry | 5/5 (100%) | 0.00 | 21.41 s | 2,815.4 |
+| Failure-guided | 5/5 (100%) | 0.00 | 20.29 s | 2,763.8 |
+
+`*` Single-shot token usage was measured for 4 of 5 tasks; one response was
+empty/malformed, so the provider did not return usable token counts.
+
+This pilot ran after pre-generation prompt estimation and output reservations
+were implemented. No budget rejection or token-overrun events occurred across
+the 15 task/strategy cases; the largest accounted task used 3,648 of the
+8,192-token budget. The pilot ran on Python 3.14.6 / Windows 11 with an NVIDIA
+GeForce RTX 3050 6GB Laptop GPU. Ollama reported the model at 100% GPU in
+`ollama ps` after the run; AgentFlow's result metadata does not itself report
+the selected device.
+The failure-classification module was added after this pilot; its new
+failure-guided behavior is covered by unit tests but has not been rerun against
+the live model.
+The JSONL records are in `results/latest.jsonl` on the local machine. See
+[PROJECT_STATUS.md](PROJECT_STATUS.md) for run details and remaining
+limitations.
+
+## Failure-guided recovery
+
+Failure-guided attempts classify failure evidence and attach a recovery action
+to each attempt:
+
+| Failure category | Recovery action |
+|---|---|
+| Syntax error | Revise the patch to fix syntax. |
+| Import error | Inspect dependencies, module paths, and imports. |
+| Test assertion failure | Re-evaluate the expected behavior and task contract. |
+| Runtime exception | Inspect the traceback and fix its underlying cause. |
+| Timeout | Stop the timed-out work; do not automatically repeat it. |
+| Empty or malformed response | Retry with controlled regeneration using the required JSON schema. |
+| Repeated identical failure | Stop instead of repeating an unchanged repair. |
+
+The attempt records include `failure_category`, `recovery_action`, and
+`recovery_decision`. A repeated failure is detected by comparing normalized
+failure fingerprints; fixed-retry remains an unconditional baseline, while
+failure-guided recovery stops when an identical failure recurs.
+
 ## Requirements and local model
 
 - Python 3.10+
@@ -86,6 +136,29 @@ calls, tool calls, test runs, token counts when the local provider reports them,
 and measured hardware details. Monetary cost is reported as unavailable for
 local inference. If the provider does not supply token usage, token metrics are
 `null`; they are not estimated or fabricated.
+
+After running the pilot, refresh the summary with the evaluation and analysis
+commands above, then update the measured results in this README if you rerun
+with a different model, configuration, or hardware.
+
+For a reproducible final evaluation, freeze the agent in a clean Git commit
+and run the seeded held-out protocol described in
+[benchmarks/README.md](benchmarks/README.md). It excludes the five tasks
+previously used for pilot development and records the frozen revision,
+randomized order, environment, settings, failure categories, and budget
+violations.
+
+Before each generation, AgentFlow estimates prompt tokens and reserves an
+output allowance, passing that allowance to Ollama as `num_predict`. Calls
+that cannot fit an estimated prompt and at least one output token are rejected.
+Ollama does not expose a tokenizer endpoint through this adapter, so prompt
+counting estimates `max(ceil(characters / 2), ceil(UTF-8 bytes / 3))` rather
+than using the model's exact tokenizer. Actual provider-reported input, output,
+and total counts are recorded after each call; any estimate shortfall or
+total-token overrun is logged in the run's `budget_events`, and further
+recovery calls stop after a budget overrun. The reservation reduces overruns
+but cannot guarantee an exact pre-generation input-token count without the
+model tokenizer.
 
 Optional E4B candidates can be configured under `optional_e4b_models`. A
 candidate is evaluated only if its exact local model tag is already installed,

@@ -2,6 +2,7 @@
 
 from .budget import BudgetLimits
 from .coding_agent import CodingAgent, CodingAgentConfig, CodingRunResult, RecoveryStrategy
+from .failure import FailureAssessment, FailureCategory
 from .schemas import RunResult, TaskPlan, TaskRequest
 
 __all__ = [
@@ -10,6 +11,8 @@ __all__ = [
     "CodingAgent",
     "CodingAgentConfig",
     "CodingRunResult",
+    "FailureAssessment",
+    "FailureCategory",
     "RecoveryStrategy",
     "RunResult",
     "TaskPlan",

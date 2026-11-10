@@ -8,6 +8,11 @@ from enum import Enum
 from typing import Any, Protocol
 
 from .budget import BudgetLimits, BudgetTracker
+from .failure import (
+    FailureCategory,
+    classify_failure,
+    repeated_failure,
+)
 from .local_model import ModelResponse
 from .workspace import WorkspaceError, WorkspaceTools
 
@@ -59,6 +64,8 @@ class Attempt:
     finished: bool = False
     passed: bool = False
     failure: str | None = None
+    failure_category: str | None = None
+    recovery_action: str | None = None
     recovery_decision: str | None = None
 
 
@@ -69,7 +76,7 @@ class CodingRunResult:
     strategy: str
     resolved: bool
     attempts: list[Attempt]
-    budget: dict[str, int | float | str | None]
+    budget: dict[str, Any]
     budget_limits: dict[str, int | float]
     summary: str
 
@@ -105,6 +112,7 @@ class CodingAgent:
         attempts: list[Attempt] = []
         summary = "Task was not resolved."
         last_failure_details = ""
+        previous_failure_fingerprint: str | None = None
 
         for repair_number in range(self.config.budgets.max_repair_attempts + 1):
             attempt = Attempt(number=repair_number)
@@ -116,7 +124,7 @@ class CodingAgent:
 
             for _ in range(self.config.max_actions_per_attempt):
                 prompt = self._prompt(task, repair_number, guidance, attempt.actions, budget)
-                max_tokens = budget.begin_model_call()
+                max_tokens = budget.begin_model_call(prompt)
                 if max_tokens is None:
                     attempt_failure_parts.append(budget.stop_reason or "Model call unavailable.")
                     break
@@ -171,7 +179,18 @@ class CodingAgent:
                     attempt_failure_parts.append(error)
                 attempt.actions.append(action_record)
 
-            test_result = self._run_tests(budget)
+            action_assessment = classify_failure("\n".join(attempt_failure_parts))
+            if action_assessment.category is FailureCategory.TIMEOUT:
+                test_result = {
+                    "passed": False,
+                    "timed_out": True,
+                    "error": (
+                        "A model or action timed out; tests were not run to avoid "
+                        "repeating timed-out work."
+                    ),
+                }
+            else:
+                test_result = self._run_tests(budget)
             attempt.test = test_result
             attempt.passed = (
                 attempt.finished
@@ -190,10 +209,37 @@ class CodingAgent:
                 failure_parts.append(budget.stop_reason)
             last_failure_details = "\n".join(part for part in failure_parts if part)
             attempt.failure = last_failure_details or "Task was not confirmed complete."
+            assessment = classify_failure(
+                attempt.failure,
+                timed_out=bool(test_result.get("timed_out")),
+            )
+            if (
+                self.config.strategy is RecoveryStrategy.FAILURE_GUIDED
+                and previous_failure_fingerprint == assessment.fingerprint
+            ):
+                assessment = repeated_failure(assessment)
+            attempt.failure_category = assessment.category.value
+            attempt.recovery_action = assessment.recovery_action
+            last_failure_details = (
+                f"Failure category: {assessment.category.value}\n"
+                f"Recommended recovery: {assessment.recovery_action}\n"
+                f"Failure evidence:\n{assessment.evidence}"
+            )
 
             if repair_number >= self.config.budgets.max_repair_attempts:
                 attempt.recovery_decision = "stop: repair-attempt limit reached"
                 summary = attempt.failure
+                break
+            if assessment.category is FailureCategory.REPEATED_IDENTICAL:
+                attempt.recovery_decision = "stop: repeated identical failure"
+                summary = attempt.recovery_action
+                break
+            if (
+                self.config.strategy is RecoveryStrategy.FAILURE_GUIDED
+                and assessment.category is FailureCategory.TIMEOUT
+            ):
+                attempt.recovery_decision = "stop: timeout requires a bounded replan"
+                summary = attempt.recovery_action
                 break
             should_retry, decision = self._should_retry(
                 attempt, test_result, attempt_failure_parts, budget
@@ -202,6 +248,7 @@ class CodingAgent:
             if not should_retry:
                 summary = decision
                 break
+            previous_failure_fingerprint = assessment.fingerprint
             summary = "Recovery scheduled within the remaining task budget."
 
         return CodingRunResult(
@@ -240,12 +287,12 @@ class CodingAgent:
             "complete current contents are present.\n\n"
             f"Task: {task}\n"
             f"Workspace snapshot: {json.dumps(snapshot, ensure_ascii=False)}\n"
-            f"Budget: {json.dumps(budget.to_dict())}"
+            f"Budget: {json.dumps(budget.to_dict(include_events=False))}"
         )
         if len(prompt) > self.config.max_prompt_chars:
             failure.append("Single-shot prompt exceeds max_prompt_chars.")
         else:
-            max_tokens = budget.begin_model_call()
+            max_tokens = budget.begin_model_call(prompt)
             if max_tokens is None:
                 failure.append(budget.stop_reason or "Model call unavailable.")
             else:
@@ -314,6 +361,12 @@ class CodingAgent:
             if budget.stop_reason:
                 failure.append(budget.stop_reason)
             attempt.failure = "\n".join(failure) or "Task was not confirmed complete."
+            assessment = classify_failure(
+                attempt.failure,
+                timed_out=bool(test_result.get("timed_out")),
+            )
+            attempt.failure_category = assessment.category.value
+            attempt.recovery_action = assessment.recovery_action
             attempt.recovery_decision = "stop: single-shot strategy does not repair"
         summary = (
             "Single-shot patch applied and configured tests passed."
@@ -419,16 +472,17 @@ class CodingAgent:
             return "This is the initial attempt. Inspect the workspace before editing."
         if self.config.strategy is RecoveryStrategy.FAILURE_GUIDED:
             return (
-                "This is a repair attempt. Use the exact failure evidence below to "
-                "choose a minimal correction. Re-check relevant files before editing.\n"
-                f"Prior failure evidence:\n{failure_details}\n"
-                f"Remaining budget: {json.dumps(budget.to_dict())}"
+                "This is a repair attempt. Follow the classified recovery action, "
+                "use the exact failure evidence, and re-check relevant files before "
+                "editing. Do not repeat an unchanged repair.\n"
+                f"Prior failure assessment:\n{failure_details}\n"
+                f"Remaining budget: {json.dumps(budget.to_dict(include_events=False))}"
             )
         return (
             "This is a fixed-retry attempt. Revisit the task and current workspace state, then "
             "make a different bounded attempt if appropriate. Detailed failure "
             "diagnostics are intentionally omitted for this baseline.\n"
-            f"Remaining budget: {json.dumps(budget.to_dict())}"
+            f"Remaining budget: {json.dumps(budget.to_dict(include_events=False))}"
         )
 
     def _prompt(
@@ -453,7 +507,7 @@ class CodingAgent:
             f"Repair number: {repair_number}\n"
             f"Guidance: {guidance}\n"
             f"Available actions: {', '.join(available)}\n"
-            f"Budget: {json.dumps(budget.to_dict())}"
+            f"Budget: {json.dumps(budget.to_dict(include_events=False))}"
         )
         if len(context) + len(task) + 80 > self.config.max_prompt_chars:
             raise ValueError("Task and recovery context exceed max_prompt_chars.")

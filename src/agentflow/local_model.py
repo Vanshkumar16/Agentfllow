@@ -22,6 +22,9 @@ class LocalModelError(RuntimeError):
     """Raised when the configured local model cannot serve a request."""
 
 
+GENERATION_TEMPERATURE = 0.1
+
+
 @dataclass(frozen=True)
 class ModelResponse:
     content: str
@@ -137,7 +140,7 @@ class OllamaModel:
             raise ValueError("timeout must be a positive finite number.")
         options: dict[str, int | float] = {
             "num_predict": max_output_tokens,
-            "temperature": 0.1,
+            "temperature": GENERATION_TEMPERATURE,
         }
         if self.device == "cpu":
             options["num_gpu"] = 0
