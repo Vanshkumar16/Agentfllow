@@ -45,6 +45,13 @@ See the [audited final evaluation report](benchmarks/final-evaluation-report.md)
 The archive preserves the exact JSONL log, config, dataset, their hashes, and
 the source revisions.
 
+These are historical measurements of the frozen implementation, not results
+for later response/recovery changes. The final 15-task set is not used for
+development or tuning. SWE-bench Verified is the selected external benchmark
+for future independent evaluation, but no dataset copy is available in this
+workspace. It was not downloaded or run; obtain an authorized dataset copy and
+define a separate evaluation protocol before reporting independent results.
+
 ## Failure-guided recovery
 
 Failure-guided attempts classify failure evidence and attach a recovery action
@@ -161,6 +168,39 @@ total-token overrun is logged in the run's `budget_events`, and further
 recovery calls stop after a budget overrun. The reservation reduces overruns
 but cannot guarantee an exact pre-generation input-token count without the
 model tokenizer.
+
+## Structured responses and call records
+
+The local Ollama adapter checks `/api/version` and sends a JSON Schema in the
+chat request's `format` field when the server reports schema support (Ollama
+0.5.0 or later). Older or unrecognized servers use the same local strict
+validation without the schema request. Every action and single-shot patch
+response must be non-empty JSON and pass the exact response schema before any
+tool call or file write. Duplicate JSON keys, non-standard numeric constants,
+unknown fields, unsupported tools, and invalid tool arguments are rejected.
+
+Ollama `done` and `done_reason` metadata are preserved in an allowlisted,
+content-free provider metadata object. A response is called truncated only
+when provider termination metadata supports that conclusion; absent metadata
+is recorded as unknown/incomplete rather than guessed from a JSON parse error.
+Malformed/schema-invalid responses are classified separately and may be
+regenerated subject to the existing budgets. Failure-guided records include
+normalized failure evidence, attempt number, suggested and actual
+`RETRY`/`REVISE`/`REPLAN`/`STOP` decisions, and rationale. Single-shot and
+fixed-retry policy behavior remains separate.
+
+Each result retains the aggregate budget fields and adds `per_call_logs` for
+model, tool, and test calls. Records share run, experiment, task, strategy,
+attempt, and model identifiers and include latency, recovery action, status,
+validation outcome, safe provider metadata, and token accounting. Measured
+provider usage, prompt estimates, output reservations, and conservative
+charged tokens are separate fields; when usage is absent, only the estimate
+and reservation are charged, never reported as measured consumption. Result
+fields separately expose patch/schema validity, final test pass, explicit
+agent completion, budget exhaustion, and strict `resolved` status. Passing
+tests without an explicit finish signal remain unresolved with a recorded
+completion reason. Existing aggregate result JSONL records remain readable;
+archived evaluation records are not rewritten.
 
 Optional E4B candidates can be configured under `optional_e4b_models`. A
 candidate is evaluated only if its exact local model tag is already installed,

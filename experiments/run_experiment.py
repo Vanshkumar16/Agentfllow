@@ -10,6 +10,7 @@ import platform
 import re
 import subprocess
 import sys
+import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -120,6 +121,7 @@ async def _run_case(
     model: OllamaModel,
     strategy: RecoveryStrategy,
     limits: BudgetLimits,
+    experiment_id: str | None = None,
 ) -> dict[str, Any]:
     with TemporaryDirectory(prefix=f"agentflow-{task['id']}-") as temp_dir:
         workspace_path = Path(temp_dir)
@@ -134,9 +136,14 @@ async def _run_case(
             workspace,
             CodingAgentConfig(strategy=strategy, budgets=limits),
         )
-        result = await agent.run(task["goal"])
+        result = await agent.run(
+            task["goal"],
+            experiment_id=experiment_id,
+            task_id=task["id"],
+        )
         return {
             "record_type": "result",
+            "experiment_id": experiment_id,
             "task_id": task["id"],
             "model": model.model,
             "device_requested": model.device,
@@ -294,9 +301,11 @@ async def run(
     if not selected_tasks:
         raise ValueError(f"No tasks selected for split '{split}'.")
     output_path.parent.mkdir(parents=True, exist_ok=True)
+    experiment_id = uuid.uuid4().hex
     with output_path.open("w", encoding="utf-8") as output_file:
         metadata = {
             "record_type": "run_metadata",
+            "experiment_id": experiment_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "dataset": str(tasks_path),
             "split": split,
@@ -346,7 +355,9 @@ async def run(
                 )
             for task in selected_tasks:
                 for strategy in STRATEGIES:
-                    row = await _run_case(task, model, strategy, limits)
+                    row = await _run_case(
+                        task, model, strategy, limits, experiment_id
+                    )
                     output_file.write(json.dumps(row, ensure_ascii=False) + "\n")
                     output_file.flush()
     if primary_error is not None:

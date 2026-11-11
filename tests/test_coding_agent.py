@@ -66,6 +66,8 @@ async def test_failure_guided_strategy_repairs_after_test_diagnostics(tmp_path):
     assert result.budget["model_calls"] == 3
     assert result.budget["test_runs"] == 2
     assert "assert add(2, 3) == 5" in model.prompts[1]
+    assert result.attempts[0].recovery_plan["decision"] == "REVISE"
+    assert result.patch_valid is True
 
 
 @pytest.mark.asyncio
@@ -180,6 +182,7 @@ async def test_fixed_retry_retries_without_failure_diagnostics(tmp_path):
     assert result.resolved is True
     assert result.repair_attempts == 1
     assert "AssertionError" not in model.prompts[1]
+    assert result.attempts[0].recovery_plan["decision"] == "RETRY"
 
 
 @pytest.mark.asyncio
@@ -257,10 +260,16 @@ async def test_malformed_response_gets_controlled_regeneration_guidance(tmp_path
     ).run("Confirm add returns the sum.")
 
     assert result.resolved is True
-    assert result.attempts[0].failure_category == FailureCategory.MALFORMED_RESPONSE.value
+    assert result.attempts[0].failure_category == FailureCategory.INCOMPLETE_RESPONSE.value
     assert "controlled regeneration" in result.attempts[0].recovery_action
-    assert "Failure category: empty_or_malformed_response" in model.prompts[1]
+    assert "Failure category: incomplete_response" in model.prompts[1]
     assert "exactly the required JSON schema" in model.prompts[1]
+    model_log = result.per_call_logs[0]
+    assert model_log["response_termination"] == "unknown"
+    assert model_log["validation_outcome"] == "invalid"
+    assert model_log["experiment_id"] is None
+    assert model_log["task_id"] is None
+    assert result.attempts[0].recovery_plan["decision"] == "RETRY"
 
 
 @pytest.mark.asyncio
@@ -291,6 +300,7 @@ async def test_failure_guided_stops_when_the_same_failure_repeats(tmp_path):
     assert result.attempts[0].failure_category == FailureCategory.TEST_ASSERTION.value
     assert result.attempts[1].failure_category == FailureCategory.REPEATED_IDENTICAL.value
     assert result.attempts[1].recovery_decision == "stop: repeated identical failure"
+    assert result.attempts[1].recovery_plan["decision"] == "STOP"
     assert "Do not repeat the same repair" in result.attempts[1].recovery_action
     serialized = result.to_dict()["attempts"][1]
     assert serialized["failure_category"] == FailureCategory.REPEATED_IDENTICAL.value
@@ -325,6 +335,7 @@ async def test_failure_guided_stops_on_test_timeout(tmp_path, monkeypatch):
     assert result.attempts[0].recovery_decision == (
         "stop: timeout requires a bounded replan"
     )
+    assert result.attempts[0].recovery_plan["decision"] == "REPLAN"
 
 
 @pytest.mark.asyncio
@@ -349,3 +360,134 @@ async def test_failure_guided_does_not_run_tests_after_model_timeout(tmp_path, m
         "stop: timeout requires a bounded replan"
     )
     assert "tests were not run" in result.attempts[0].test["error"]
+
+
+@pytest.mark.asyncio
+async def test_invalid_action_schema_is_rejected_before_tool_execution(tmp_path):
+    model = FakeModel(
+        [
+            json.dumps(
+                {
+                    "action": {
+                        "tool": "write_file",
+                        "arguments": {
+                            "path": "must-not-exist.py",
+                            "content": "value = 1",
+                            "unexpected": True,
+                        },
+                    }
+                }
+            )
+        ]
+    )
+    result = await CodingAgent(
+        model,
+        WorkspaceTools(tmp_path),
+        CodingAgentConfig(
+            budgets=BudgetLimits(max_repair_attempts=0),
+            max_actions_per_attempt=1,
+        ),
+    ).run("Do not apply malformed actions.")
+
+    assert not (tmp_path / "must-not-exist.py").exists()
+    assert result.patch_valid is False
+    assert result.attempts[0].failure_category == FailureCategory.SCHEMA_VALIDATION.value
+    assert result.per_call_logs[0]["validation_outcome"] == "invalid"
+    assert result.attempts[0].recovery_plan["decision"] == "STOP"
+
+
+@pytest.mark.asyncio
+async def test_provider_truncation_is_distinguished_from_unknown_termination(tmp_path):
+    truncated_model = FakeModel(
+        [ModelResponse("not json", 12, 8, done=False)]
+    )
+    truncated = await CodingAgent(
+        truncated_model,
+        WorkspaceTools(tmp_path),
+        CodingAgentConfig(
+            budgets=BudgetLimits(max_repair_attempts=0),
+            max_actions_per_attempt=1,
+        ),
+    ).run("Handle a response that the provider says was cut off.")
+
+    assert truncated.attempts[0].failure_category == FailureCategory.TRUNCATED_RESPONSE.value
+    assert truncated.per_call_logs[0]["response_termination"] == "truncated"
+
+    unknown_model = FakeModel(["not json"])
+    unknown = await CodingAgent(
+        unknown_model,
+        WorkspaceTools(tmp_path),
+        CodingAgentConfig(
+            budgets=BudgetLimits(max_repair_attempts=0),
+            max_actions_per_attempt=1,
+        ),
+    ).run("Handle invalid JSON with no termination metadata.")
+
+    assert unknown.attempts[0].failure_category == FailureCategory.INCOMPLETE_RESPONSE.value
+    assert unknown.per_call_logs[0]["response_termination"] == "unknown"
+    assert "truncated" not in unknown.attempts[0].failure.lower()
+
+
+@pytest.mark.asyncio
+async def test_passing_tests_without_finish_are_not_strict_completion(tmp_path):
+    (tmp_path / "solution.py").write_text(
+        "def add(a, b):\n    return a + b\n", encoding="utf-8"
+    )
+    (tmp_path / "test_solution.py").write_text(
+        "from solution import add\n\ndef test_add():\n    assert add(2, 3) == 5\n",
+        encoding="utf-8",
+    )
+    model = FakeModel([_action("read_file", {"path": "solution.py"})])
+    workspace = WorkspaceTools(
+        tmp_path, allow_tests=True, test_command=(sys.executable, "-m", "pytest", "-q")
+    )
+
+    result = await CodingAgent(
+        model,
+        workspace,
+        CodingAgentConfig(
+            budgets=BudgetLimits(
+                max_repair_attempts=0,
+                max_model_calls=1,
+                max_test_runs=1,
+            ),
+            max_actions_per_attempt=1,
+        ),
+    ).run("Verify the existing implementation.", experiment_id="exp-1", task_id="dev-1")
+
+    assert result.resolved is False
+    assert result.to_dict()["strict_resolved"] is False
+    assert result.final_test_passed is True
+    assert result.explicit_completion is False
+    assert "did not emit an explicit finish action" in result.completion_reason
+    assert {row["call_type"] for row in result.per_call_logs} == {"model", "tool", "test"}
+    assert all(row["experiment_id"] == "exp-1" for row in result.per_call_logs)
+    assert all(row["task_id"] == "dev-1" for row in result.per_call_logs)
+    assert result.per_call_logs[0]["token_accounting"]["usage_status"] == "measured"
+
+
+@pytest.mark.asyncio
+async def test_single_shot_validates_all_patches_before_writing_any(tmp_path):
+    response = json.dumps(
+        {
+            "complete": True,
+            "patches": [
+                {"path": "first.py", "content": "value = 1"},
+                {"path": "first.py", "content": "value = 2"},
+            ],
+        }
+    )
+    result = await CodingAgent(
+        FakeModel([response]),
+        WorkspaceTools(tmp_path),
+        CodingAgentConfig(
+            strategy=RecoveryStrategy.SINGLE_SHOT,
+            budgets=BudgetLimits(max_repair_attempts=0),
+        ),
+    ).run("Reject duplicate patch paths.")
+
+    assert not (tmp_path / "first.py").exists()
+    assert result.patch_valid is False
+    model_logs = [row for row in result.per_call_logs if row["call_type"] == "model"]
+    assert model_logs[0]["validation_outcome"] == "invalid"
+    assert result.explicit_completion is False

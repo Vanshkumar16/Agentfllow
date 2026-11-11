@@ -48,6 +48,32 @@ def test_unknown_usage_is_charged_using_prompt_estimate_and_output_reservation()
     assert tracker.to_dict()["input_tokens"] is None
     assert tracker.to_dict()["budget_tokens_charged"] == 14
     assert tracker.remaining_tokens == 6
+    accounting = next(
+        event
+        for event in tracker.budget_events
+        if event["event"] == "model_call_accounted"
+    )
+    assert accounting["usage_status"] == "unavailable"
+    assert accounting["charged_total_tokens"] == 14
+
+
+def test_partial_measured_usage_is_separate_from_conservative_charge():
+    tracker = BudgetTracker(
+        BudgetLimits(max_tokens=30, max_output_tokens_per_call=10)
+    )
+
+    assert tracker.begin_model_call("abcdefgh") == 10
+    accounting = tracker.record_model_usage(4, None)
+
+    assert accounting["estimated_input_tokens"] == 4
+    assert accounting["measured_input_tokens"] == 4
+    assert accounting["measured_output_tokens"] is None
+    assert accounting["charged_input_tokens"] == 4
+    assert accounting["charged_output_tokens"] == 10
+    assert accounting["usage_status"] == "partial"
+    assert tracker.to_dict()["measured_input_tokens"] == 4
+    assert tracker.to_dict()["measured_output_tokens"] is None
+    assert tracker.to_dict()["budget_tokens_charged"] == 14
 
 
 def test_actual_usage_overrun_is_logged_and_stops_future_calls(caplog):

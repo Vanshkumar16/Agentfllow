@@ -10,6 +10,7 @@ import platform
 import random
 import subprocess
 import sys
+import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -237,6 +238,7 @@ async def run(
     if len(tasks) != 15:
         raise ValueError(f"Expected 15 held-out tasks, found {len(tasks)}.")
     cases = build_schedule(tasks, random_seed)
+    experiment_id = uuid.uuid4().hex
     order = [
         {"order": index, "task_id": task["id"], "strategy": strategy.value}
         for index, (task, strategy) in enumerate(cases, start=1)
@@ -251,6 +253,7 @@ async def run(
     hardware = get_hardware_info()
     metadata = {
         "record_type": "run_metadata",
+        "experiment_id": experiment_id,
         "evaluation": "frozen-final",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "split": EXPECTED_SPLIT,
@@ -308,7 +311,9 @@ async def run(
         output_file.write(json.dumps(metadata, ensure_ascii=False) + "\n")
         output_file.flush()
         for index, (task, strategy) in enumerate(cases, start=1):
-            row = await _run_case(task, model, strategy, limits)
+            row = await _run_case(
+                task, model, strategy, limits, experiment_id
+            )
             row["evaluation_order"] = index
             row["random_seed"] = random_seed
             output_file.write(json.dumps(row, ensure_ascii=False) + "\n")

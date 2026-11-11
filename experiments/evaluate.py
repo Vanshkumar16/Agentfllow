@@ -56,6 +56,18 @@ def evaluate(path: Path) -> dict[str, Any]:
             )
             for row in group
         )
+        patch_valid = sum(row.get("patch_valid") is True for row in group)
+        explicit_completion = sum(
+            row.get("explicit_completion") is True for row in group
+        )
+        budget_exhausted = sum(
+            row.get("budget_exhausted") is True for row in group
+        )
+        tests_passed_without_completion = sum(
+            row.get("final_test_passed") is True
+            and row.get("explicit_completion") is False
+            for row in group
+        )
         attempts = [
             len(row.get("attempts", []))
             for row in group
@@ -93,6 +105,20 @@ def evaluate(path: Path) -> dict[str, Any]:
         budget_violation_cases = sum(
             _has_budget_violation(row) for row in group
         )
+        call_logs = [
+            call
+            for row in group
+            for call in _per_call_logs(row)
+        ]
+        call_counts = Counter(call.get("call_type") for call in call_logs)
+        model_call_logs = [
+            call for call in call_logs if call.get("call_type") == "model"
+        ]
+        usage_statuses = Counter(
+            accounting.get("usage_status")
+            for call in model_call_logs
+            if isinstance((accounting := call.get("token_accounting")), dict)
+        )
         summaries.append(
             {
                 "model": model,
@@ -102,6 +128,10 @@ def evaluate(path: Path) -> dict[str, Any]:
                 "resolution_rate": resolved / len(group),
                 "test_passed": test_passed,
                 "test_pass_rate": test_passed / len(group),
+                "patch_valid": patch_valid,
+                "explicit_completion": explicit_completion,
+                "budget_exhausted": budget_exhausted,
+                "tests_passed_without_completion": tests_passed_without_completion,
                 "mean_attempts": sum(attempts) / len(attempts),
                 "mean_repair_attempts": sum(repairs) / len(repairs),
                 "mean_latency_seconds": sum(latencies) / len(latencies) if latencies else None,
@@ -114,6 +144,20 @@ def evaluate(path: Path) -> dict[str, Any]:
                 "budget_rejection_events": budget_rejection_events,
                 "token_overrun_events": token_overrun_events,
                 "budget_violation_cases": budget_violation_cases,
+                "model_calls_logged": call_counts.get("model", 0),
+                "tool_calls_logged": call_counts.get("tool", 0),
+                "test_calls_logged": call_counts.get("test", 0),
+                "invalid_model_responses": sum(
+                    call.get("validation_outcome") == "invalid"
+                    for call in model_call_logs
+                ),
+                "unknown_termination_calls": sum(
+                    call.get("response_termination") == "unknown"
+                    for call in model_call_logs
+                ),
+                "measured_model_usage_calls": usage_statuses.get("measured", 0),
+                "partial_model_usage_calls": usage_statuses.get("partial", 0),
+                "unavailable_model_usage_calls": usage_statuses.get("unavailable", 0),
                 "cost_usd": None,
                 "cost_note": "Local inference does not report monetary cost.",
             }
@@ -143,6 +187,13 @@ def _budget_events(row: dict[str, Any]) -> list[dict[str, Any]]:
     if not isinstance(events, list):
         return []
     return [event for event in events if isinstance(event, dict)]
+
+
+def _per_call_logs(row: dict[str, Any]) -> list[dict[str, Any]]:
+    calls = row.get("per_call_logs")
+    if not isinstance(calls, list):
+        return []
+    return [call for call in calls if isinstance(call, dict)]
 
 
 def _has_budget_violation(row: dict[str, Any]) -> bool:

@@ -15,8 +15,18 @@ class FailureCategory(str, Enum):
     RUNTIME_EXCEPTION = "runtime_exception"
     TIMEOUT = "timeout"
     MALFORMED_RESPONSE = "empty_or_malformed_response"
+    SCHEMA_VALIDATION = "schema_validation_failure"
+    TRUNCATED_RESPONSE = "truncated_response"
+    INCOMPLETE_RESPONSE = "incomplete_response"
     REPEATED_IDENTICAL = "repeated_identical_failure"
     UNKNOWN = "unknown"
+
+
+class RecoveryDecision(str, Enum):
+    RETRY = "RETRY"
+    REVISE = "REVISE"
+    REPLAN = "REPLAN"
+    STOP = "STOP"
 
 
 _RECOVERY_ACTIONS = {
@@ -44,6 +54,19 @@ _RECOVERY_ACTIONS = {
         "Use controlled regeneration: return exactly the required JSON schema "
         "in one response, without prose or markdown outside the JSON object."
     ),
+    FailureCategory.SCHEMA_VALIDATION: (
+        "Regenerate the response using only the required fields and the exact "
+        "tool-specific argument schema."
+    ),
+    FailureCategory.TRUNCATED_RESPONSE: (
+        "Treat the response as provider-confirmed truncation; regenerate once "
+        "within the remaining call, token, and time limits."
+    ),
+    FailureCategory.INCOMPLETE_RESPONSE: (
+        "Use controlled regeneration and return exactly the required JSON "
+        "schema. The response is invalid or incomplete, but provider metadata "
+        "cannot confirm truncation."
+    ),
     FailureCategory.REPEATED_IDENTICAL: (
         "Do not repeat the same repair. Stop and report the unchanged failure "
         "instead of issuing another identical retry."
@@ -61,6 +84,7 @@ class FailureAssessment:
     recovery_action: str
     fingerprint: str
     evidence: str
+    suggested_decision: RecoveryDecision
 
 
 def classify_failure(evidence: str, *, timed_out: bool = False) -> FailureAssessment:
@@ -69,6 +93,12 @@ def classify_failure(evidence: str, *, timed_out: bool = False) -> FailureAssess
 
     if timed_out or _contains_timeout(lowered):
         category = FailureCategory.TIMEOUT
+    elif _contains_truncated_response(lowered):
+        category = FailureCategory.TRUNCATED_RESPONSE
+    elif _contains_incomplete_response(lowered):
+        category = FailureCategory.INCOMPLETE_RESPONSE
+    elif _contains_schema_failure(lowered):
+        category = FailureCategory.SCHEMA_VALIDATION
     elif _contains_syntax_error(lowered):
         category = FailureCategory.SYNTAX_ERROR
     elif _contains_import_error(lowered):
@@ -87,6 +117,7 @@ def classify_failure(evidence: str, *, timed_out: bool = False) -> FailureAssess
         recovery_action=_RECOVERY_ACTIONS[category],
         fingerprint=_fingerprint(category, normalized_evidence),
         evidence=normalized_evidence,
+        suggested_decision=_DECISIONS[category],
     )
 
 
@@ -96,6 +127,7 @@ def repeated_failure(assessment: FailureAssessment) -> FailureAssessment:
         recovery_action=_RECOVERY_ACTIONS[FailureCategory.REPEATED_IDENTICAL],
         fingerprint=assessment.fingerprint,
         evidence=assessment.evidence,
+        suggested_decision=RecoveryDecision.STOP,
     )
 
 
@@ -168,6 +200,7 @@ def _contains_malformed_response(text: str) -> bool:
         for marker in (
             "empty or malformed response",
             "empty model response",
+            "malformed response:",
             "response is not valid json",
             "response must contain an 'action' object",
             "action requires a non-empty tool name",
@@ -176,6 +209,42 @@ def _contains_malformed_response(text: str) -> bool:
             "single-shot response requires",
         )
     )
+
+
+def _contains_truncated_response(text: str) -> bool:
+    return (
+        "provider-confirmed truncated response" in text
+        or "truncated_response=true" in text
+    )
+
+
+def _contains_incomplete_response(text: str) -> bool:
+    return (
+        "provider termination status is unknown" in text
+        or "incomplete_response=true" in text
+    )
+
+
+def _contains_schema_failure(text: str) -> bool:
+    return (
+        "response schema validation failed" in text
+        or "schema validation failed" in text
+    )
+
+
+_DECISIONS = {
+    FailureCategory.SYNTAX_ERROR: RecoveryDecision.REVISE,
+    FailureCategory.IMPORT_ERROR: RecoveryDecision.REVISE,
+    FailureCategory.TEST_ASSERTION: RecoveryDecision.REVISE,
+    FailureCategory.RUNTIME_EXCEPTION: RecoveryDecision.REVISE,
+    FailureCategory.TIMEOUT: RecoveryDecision.REPLAN,
+    FailureCategory.MALFORMED_RESPONSE: RecoveryDecision.RETRY,
+    FailureCategory.SCHEMA_VALIDATION: RecoveryDecision.RETRY,
+    FailureCategory.TRUNCATED_RESPONSE: RecoveryDecision.RETRY,
+    FailureCategory.INCOMPLETE_RESPONSE: RecoveryDecision.RETRY,
+    FailureCategory.REPEATED_IDENTICAL: RecoveryDecision.STOP,
+    FailureCategory.UNKNOWN: RecoveryDecision.REPLAN,
+}
 
 
 def _fingerprint(category: FailureCategory, evidence: str) -> str:

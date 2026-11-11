@@ -92,6 +92,8 @@ class BudgetTracker:
         self._output_usage_available = True
         self.estimated_input_tokens = 0
         self._charged_tokens = 0
+        self._charged_input_tokens = 0
+        self._charged_output_tokens = 0
         self._reservation: ModelCallReservation | None = None
         self.budget_events: list[dict[str, Any]] = []
         self.stop_reason: str | None = None
@@ -220,7 +222,7 @@ class BudgetTracker:
 
     def record_model_usage(
         self, input_tokens: int | None, output_tokens: int | None
-    ) -> None:
+    ) -> dict[str, Any]:
         reservation = self._reservation
         if reservation is None:
             raise RuntimeError("No model-call token reservation is pending.")
@@ -258,15 +260,35 @@ class BudgetTracker:
         )
         charged_tokens = charged_input + charged_output
         self._charged_tokens += charged_tokens
+        self._charged_input_tokens += charged_input
+        self._charged_output_tokens += charged_output
         self._reservation = None
-
-        actual_input_for_event = input_tokens
-        actual_output_for_event = output_tokens
         actual_total = (
             input_tokens + output_tokens
             if input_tokens is not None and output_tokens is not None
             else None
         )
+        accounting = {
+            "call": self.model_calls,
+            "estimated_input_tokens": reservation.estimated_input_tokens,
+            "measured_input_tokens": input_tokens,
+            "measured_output_tokens": output_tokens,
+            "measured_total_tokens": actual_total,
+            "reserved_output_tokens": reservation.max_output_tokens,
+            "charged_input_tokens": charged_input,
+            "charged_output_tokens": charged_output,
+            "charged_total_tokens": charged_tokens,
+            "usage_status": (
+                "measured"
+                if input_tokens is not None and output_tokens is not None
+                else "partial"
+                if input_tokens is not None or output_tokens is not None
+                else "unavailable"
+            ),
+        }
+
+        actual_input_for_event = input_tokens
+        actual_output_for_event = output_tokens
         reservation_overrun = (
             actual_total is not None
             and actual_total > reservation.reserved_tokens
@@ -303,6 +325,8 @@ class BudgetTracker:
                 actual_input_tokens=actual_input_for_event,
                 actual_output_tokens=actual_output_for_event,
             )
+        self._record_event("model_call_accounted", **accounting)
+        return accounting
 
     def begin_tool_call(self) -> bool:
         if self.tool_calls >= self.limits.max_tool_calls:
@@ -357,8 +381,13 @@ class BudgetTracker:
             "input_tokens": self.input_tokens if self._input_usage_available else None,
             "output_tokens": self.output_tokens if self._output_usage_available else None,
             "total_tokens": self.tokens_used,
+            "measured_input_tokens": self.input_tokens if self._input_usage_available else None,
+            "measured_output_tokens": self.output_tokens if self._output_usage_available else None,
+            "measured_total_tokens": self.tokens_used,
             "tokens_used": self.tokens_used,
             "estimated_input_tokens": self.estimated_input_tokens,
+            "charged_input_tokens": self._charged_input_tokens,
+            "charged_output_tokens": self._charged_output_tokens,
             "budget_tokens_charged": self._charged_tokens,
             "reserved_output_tokens": self.reserved_output_tokens,
             "elapsed_seconds": round(self.elapsed_seconds, 3),

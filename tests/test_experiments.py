@@ -103,7 +103,11 @@ def test_evaluator_reports_resolution_attempts_latency_and_tokens(tmp_path):
             "task_id": "t1",
             "model": "local-model",
             "strategy": "failure-guided",
-            "resolved": True,
+            "resolved": False,
+            "patch_valid": True,
+            "final_test_passed": True,
+            "explicit_completion": False,
+            "budget_exhausted": False,
             "repair_attempts": 1,
             "attempts": [
                 {
@@ -131,6 +135,16 @@ def test_evaluator_reports_resolution_attempts_latency_and_tokens(tmp_path):
                 "task_timeout_seconds": 120,
                 "max_tokens": 8192,
             },
+            "per_call_logs": [
+                {
+                    "call_type": "model",
+                    "validation_outcome": "valid",
+                    "response_termination": "complete",
+                    "token_accounting": {"usage_status": "measured"},
+                },
+                {"call_type": "tool"},
+                {"call_type": "test"},
+            ],
         },
     ]
     results_file.write_text(
@@ -141,14 +155,21 @@ def test_evaluator_reports_resolution_attempts_latency_and_tokens(tmp_path):
 
     assert report["metadata"][0]["split"] == "pilot"
     summary = report["runs"][0]
-    assert summary["resolution_rate"] == 1.0
+    assert summary["resolution_rate"] == 0.0
     assert summary["test_pass_rate"] == 1.0
+    assert summary["patch_valid"] == 1
+    assert summary["explicit_completion"] == 0
+    assert summary["tests_passed_without_completion"] == 1
     assert summary["mean_repair_attempts"] == 1.0
     assert summary["mean_tokens_used"] == 100
     assert summary["failure_categories"] == {"test_assertion_failure": 1}
     assert summary["budget_rejection_events"] == 1
     assert summary["token_overrun_events"] == 0
     assert summary["budget_violation_cases"] == 0
+    assert summary["model_calls_logged"] == 1
+    assert summary["tool_calls_logged"] == 1
+    assert summary["test_calls_logged"] == 1
+    assert summary["measured_model_usage_calls"] == 1
 
 
 def test_evaluator_reports_token_budget_violations(tmp_path):

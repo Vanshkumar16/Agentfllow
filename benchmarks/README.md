@@ -42,3 +42,10 @@ Aggregate reports include classified failure counts, budget rejection events,
 token overruns, and cases that exceeded a configured budget. A budget rejection
 is a guard stopping an inadmissible call; it is reported separately from a
 budget violation.
+
+The archived 45-case JSONL, frozen source revision, config, and task dataset are
+historical evidence and must remain unchanged. Do not execute or tune against
+the 15 frozen tasks with a later implementation. SWE-bench Verified is the
+selected external benchmark for independent evaluation, but it is not present
+in this workspace. The dataset was not downloaded and the independent run is
+deferred until an authorized copy and a separate protocol are available.

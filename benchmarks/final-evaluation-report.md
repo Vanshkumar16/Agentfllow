@@ -167,3 +167,18 @@ are estimated rather than obtained from Gemma's exact tokenizer. Results do
 not establish statistical significance or broad task performance. Do not tune
 the agent against these evaluation tasks and present a rerun as an untouched
 holdout.
+
+## Subsequent response-recovery work and independent evaluation
+
+The response-validation and recovery implementation developed after this
+freeze is not represented by the measurements above. The archived results,
+their source/config/dataset copies, and frozen source revision remain
+historical baseline evidence; the frozen 15 tasks were not executed or used
+for development checks during that subsequent work.
+
+SWE-bench Verified is the selected external benchmark for independent
+evaluation. No authorized dataset copy is available in this workspace, and
+downloading a dataset was outside the approved scope, so the independent
+evaluation was deferred. No replacement or synthetic benchmark was created.
+The response-recovery changes therefore have unit/development validation only;
+they have no claimed performance gain or independent task-resolution result.
