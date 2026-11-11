@@ -23,8 +23,10 @@ superiority or broad generalization.
 - Failure-guided attempts classify syntax, import, assertion, runtime,
   timeout, malformed-response, repeated-identical, and unknown failures;
   attempts store the category and recovery action.
-- Timeouts stop automatic failure-guided retries; the agent also skips the
-  configured test run when the model/action itself has timed out.
+- Failure-guided timeouts schedule a bounded replan when remaining time, token,
+  call, and test budgets permit it. The next attempt is directed to choose a
+  smaller alternative; otherwise recovery stops. The agent skips the configured
+  test run within an attempt when its model/action has timed out.
 - Repeated identical failure fingerprints stop failure-guided recovery before
   another retry. The fixed-retry strategy remains an unconditional baseline.
 - The local Ollama-compatible endpoint is reachable.

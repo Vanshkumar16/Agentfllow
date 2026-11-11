@@ -154,6 +154,7 @@ class CodingAgent:
         summary = "Task was not resolved."
         last_failure_details = ""
         recovery_context_action: str | None = None
+        timeout_replan = False
         previous_failure_fingerprint: str | None = None
         patch_valid_state: bool | None = None
 
@@ -164,8 +165,10 @@ class CodingAgent:
             )
             attempts.append(attempt)
             guidance = self._recovery_guidance(
-                repair_number, last_failure_details, budget
+                repair_number, last_failure_details, budget,
+                timeout_replan=timeout_replan,
             )
+            timeout_replan = False
             attempt_failure_parts: list[str] = []
 
             for _ in range(self.config.max_actions_per_attempt):
@@ -417,12 +420,35 @@ class CodingAgent:
                 self.config.strategy is RecoveryStrategy.FAILURE_GUIDED
                 and assessment.category is FailureCategory.TIMEOUT
             ):
-                attempt.recovery_decision = "stop: timeout requires a bounded replan"
+                if not self.workspace.allow_tests:
+                    replan = False
+                    rationale = (
+                        "stop: tests are disabled, so a timeout replan cannot be verified"
+                    )
+                else:
+                    replan, budget_reason = budget.can_repair(
+                        minimum_tokens=self.config.budgets.min_repair_tokens,
+                        minimum_seconds=self.config.budgets.min_repair_seconds,
+                    )
+                    rationale = (
+                        "replan: timeout recovery fits the remaining budget"
+                        if replan
+                        else f"stop: timeout replan unavailable; {budget_reason}"
+                    )
+                attempt.recovery_decision = rationale
                 attempt.recovery_plan.update(
-                    decision=RecoveryDecision.REPLAN.value,
-                    rationale=attempt.recovery_decision,
+                    decision=(
+                        RecoveryDecision.REPLAN.value
+                        if replan
+                        else RecoveryDecision.STOP.value
+                    ),
+                    rationale=rationale,
                 )
-                summary = attempt.recovery_action
+                if replan:
+                    timeout_replan = True
+                    summary = "Timeout recovery scheduled within the remaining task budget."
+                    continue
+                summary = rationale
                 break
             should_retry, decision = self._should_retry(
                 attempt, test_result, attempt_failure_parts, budget
@@ -1057,11 +1083,25 @@ class CodingAgent:
         return True, f"retry: actionable failure; {budget_reason}"
 
     def _recovery_guidance(
-        self, repair_number: int, failure_details: str, budget: BudgetTracker
+        self,
+        repair_number: int,
+        failure_details: str,
+        budget: BudgetTracker,
+        *,
+        timeout_replan: bool = False,
     ) -> str:
         if repair_number == 0:
             return "This is the initial attempt. Inspect the workspace before editing."
         if self.config.strategy is RecoveryStrategy.FAILURE_GUIDED:
+            if timeout_replan:
+                return (
+                    "This is a bounded timeout replan. Do not repeat the timed-out "
+                    "operation unchanged. Reinspect the current workspace and choose "
+                    "a smaller alternative action that can finish and be verified "
+                    "within the remaining budget.\n"
+                    f"Prior failure assessment:\n{failure_details}\n"
+                    f"Remaining budget: {json.dumps(budget.to_dict(include_events=False))}"
+                )
             return (
                 "This is a repair attempt. Follow the classified recovery action, "
                 "use the exact failure evidence, and re-check relevant files before "

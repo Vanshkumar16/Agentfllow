@@ -313,15 +313,27 @@ async def test_failure_guided_stops_when_the_same_failure_repeats(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_failure_guided_stops_on_test_timeout(tmp_path, monkeypatch):
-    model = FakeModel([_action("finish"), _action("finish")])
+async def test_failure_guided_replans_after_test_timeout(tmp_path, monkeypatch):
+    model = FakeModel(
+        [
+            _action("finish"),
+            _action("write_file", {"path": "solution.py", "content": "value = 1"}),
+            _action("finish"),
+        ]
+    )
     workspace = WorkspaceTools(tmp_path, allow_tests=True)
+    test_results = iter(
+        [
+            CommandResult(
+                ["pytest"], None, "", "test command timed out", timed_out=True
+            ),
+            CommandResult(["pytest"], 0, "1 passed", ""),
+        ]
+    )
     monkeypatch.setattr(
         workspace,
         "run_tests",
-        lambda timeout: CommandResult(
-            ["pytest"], None, "", "test command timed out", timed_out=True
-        ),
+        lambda timeout: next(test_results),
     )
 
     result = await CodingAgent(
@@ -329,22 +341,52 @@ async def test_failure_guided_stops_on_test_timeout(tmp_path, monkeypatch):
         workspace,
         CodingAgentConfig(
             strategy=RecoveryStrategy.FAILURE_GUIDED,
-            budgets=BudgetLimits(max_model_calls=4, max_test_runs=2),
-            max_actions_per_attempt=1,
+            budgets=BudgetLimits(max_model_calls=5, max_test_runs=2),
+            max_actions_per_attempt=2,
         ),
     ).run("Inspect and fix the slow failing test.")
 
-    assert result.resolved is False
-    assert len(result.attempts) == 1
+    assert result.resolved is True
+    assert len(result.attempts) == 2
     assert result.attempts[0].failure_category == FailureCategory.TIMEOUT.value
-    assert result.attempts[0].recovery_decision == (
-        "stop: timeout requires a bounded replan"
-    )
     assert result.attempts[0].recovery_plan["decision"] == "REPLAN"
+    assert "bounded timeout replan" in model.prompts[1]
+    assert result.attempts[1].actions[0]["tool"] == "write_file"
+    assert result.budget["model_calls"] == 3
+    assert result.budget["test_runs"] == 2
 
 
 @pytest.mark.asyncio
-async def test_failure_guided_does_not_run_tests_after_model_timeout(tmp_path, monkeypatch):
+async def test_failure_guided_replans_after_model_timeout(tmp_path, monkeypatch):
+    model = FakeModel(
+        [TimeoutError("model request timed out"), _action("finish")]
+    )
+    workspace = WorkspaceTools(tmp_path, allow_tests=True)
+    monkeypatch.setattr(
+        workspace,
+        "run_tests",
+        lambda timeout: CommandResult(["pytest"], 0, "1 passed", ""),
+    )
+
+    result = await CodingAgent(
+        model,
+        workspace,
+        CodingAgentConfig(
+            strategy=RecoveryStrategy.FAILURE_GUIDED,
+            budgets=BudgetLimits(max_model_calls=3, max_test_runs=2),
+        ),
+    ).run("Fix the task.")
+
+    assert result.resolved is True
+    assert len(result.attempts) == 2
+    assert result.attempts[0].failure_category == FailureCategory.TIMEOUT.value
+    assert result.attempts[0].recovery_plan["decision"] == "REPLAN"
+    assert "bounded timeout replan" in model.prompts[1]
+    assert "tests were not run" in result.attempts[0].test["error"]
+
+
+@pytest.mark.asyncio
+async def test_failure_guided_stops_timeout_replan_at_attempt_limit(tmp_path, monkeypatch):
     model = FakeModel([TimeoutError("model request timed out")])
     workspace = WorkspaceTools(tmp_path, allow_tests=True)
     monkeypatch.setattr(
@@ -356,15 +398,16 @@ async def test_failure_guided_does_not_run_tests_after_model_timeout(tmp_path, m
     result = await CodingAgent(
         model,
         workspace,
-        CodingAgentConfig(strategy=RecoveryStrategy.FAILURE_GUIDED),
+        CodingAgentConfig(
+            strategy=RecoveryStrategy.FAILURE_GUIDED,
+            budgets=BudgetLimits(max_repair_attempts=0),
+        ),
     ).run("Fix the task.")
 
-    assert result.resolved is False
-    assert result.attempts[0].failure_category == FailureCategory.TIMEOUT.value
-    assert result.attempts[0].recovery_decision == (
-        "stop: timeout requires a bounded replan"
-    )
-    assert "tests were not run" in result.attempts[0].test["error"]
+    assert len(result.attempts) == 1
+    assert result.budget["model_calls"] == 1
+    assert result.attempts[0].recovery_plan["decision"] == "STOP"
+    assert result.attempts[0].recovery_decision == "stop: repair-attempt limit reached"
 
 
 @pytest.mark.asyncio

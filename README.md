@@ -190,7 +190,11 @@ Malformed/schema-invalid responses are classified separately and may be
 regenerated subject to the existing budgets. Failure-guided records include
 normalized failure evidence, attempt number, suggested and actual
 `RETRY`/`REVISE`/`REPLAN`/`STOP` decisions, and rationale. Single-shot and
-fixed-retry policy behavior remains separate.
+fixed-retry policy behavior remains separate. When a failure-guided model,
+action, or test times out, `REPLAN` schedules a bounded follow-up attempt only
+when the remaining time, token, call, and test budgets permit it. The next
+attempt is explicitly asked to choose a smaller alternative rather than repeat
+the timed-out operation; otherwise the recorded decision is `STOP`.
 
 Each result retains the aggregate budget fields and adds `per_call_logs` for
 model, tool, and test calls. Records share run, experiment, task, strategy,
