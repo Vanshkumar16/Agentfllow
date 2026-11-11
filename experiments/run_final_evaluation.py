@@ -10,6 +10,7 @@ import platform
 import random
 import subprocess
 import sys
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -46,14 +47,7 @@ EXPECTED_REPAIR_ATTEMPTS = 3
 EXPECTED_TIMEOUT_SECONDS = 120
 EXPECTED_TOKEN_BUDGET = 8192
 DEFAULT_RANDOM_SEED = 20261111
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as file:
-        for chunk in iter(lambda: file.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+FROZEN_AGENT_REVISION = "7e1ab1ea56f93136c1c06dddf22f6b598d263288"
 
 
 def _git(command: list[str]) -> str:
@@ -70,6 +64,34 @@ def _git(command: list[str]) -> str:
     if completed.returncode != 0:
         raise RuntimeError(f"Git command failed: {' '.join(command)}: {completed.stderr.strip()}")
     return completed.stdout.strip()
+
+
+def _assert_frozen_agent(revision: str) -> str:
+    if _git(["merge-base", "--is-ancestor", FROZEN_AGENT_REVISION, revision]) != "":
+        raise RuntimeError("The frozen agent revision is not an ancestor of HEAD.")
+    comparison = subprocess.run(
+        [
+            "git",
+            "diff",
+            "--quiet",
+            FROZEN_AGENT_REVISION,
+            "--",
+            "src/agentflow",
+        ],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=10,
+        shell=False,
+        check=False,
+    )
+    if comparison.returncode != 0:
+        raise RuntimeError(
+            "Agent sources differ from the frozen implementation revision "
+            f"{FROZEN_AGENT_REVISION}."
+        )
+    return FROZEN_AGENT_REVISION
 
 
 def _ollama_server_version(base_url: str) -> str | None:
@@ -179,6 +201,7 @@ async def run(
     import yaml
 
     revision = _git(["rev-parse", "HEAD"])
+    frozen_agent_revision = _assert_frozen_agent(revision)
     dirty_state = _git(["status", "--porcelain", "--untracked-files=normal"])
     if dirty_state:
         raise RuntimeError(
@@ -239,7 +262,8 @@ async def run(
         "pilot_tasks_excluded_from_final_evaluation": True,
         "random_seed": random_seed,
         "randomized_execution_order": order,
-        "agent_git_revision": revision,
+        "agent_git_revision": frozen_agent_revision,
+        "evaluation_harness_revision": revision,
         "git_worktree_clean_before_run": True,
         "dataset_path": str(tasks_path),
         "dataset_sha256": hashlib.sha256(dataset_bytes).hexdigest(),
