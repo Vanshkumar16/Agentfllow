@@ -1,20 +1,19 @@
-# Project readiness and blockers
+# Project readiness and evaluation results
 
 Checked: 2026-11-11
 
 ## Summary
 
 The configured `gemma4:e2b` model is installed and responds to local
-generation. The updated pre-generation budget controller passed its automated
-tests and was exercised in the 5-task pilot across all three strategies. The
-failure-guided path now classifies errors and suppresses repeated identical
-retries. All 43 repository unit tests pass. Results are preliminary: 14/15
-strategy cases resolved, with the single-shot baseline accounting for the one
-unresolved case.
+generation. The pre-generation budget controller and structured failure-guided
+recovery are frozen. The randomized final evaluation completed all 45
+task/strategy cases on the 15 held-out tasks. All 46 repository tests pass.
+These results are small-sample observations, not evidence of strategy
+superiority or broad generalization.
 
 ## What works
 
-- The unit suite passes: 43 tests.
+- The unit suite passes: 46 tests.
 - Python modules compile, and the installed dependency check passes.
 - The experiment runner, three strategy paths, and controlled 20-task
   benchmark are available.
@@ -35,11 +34,36 @@ unresolved case.
 - The recorded hardware preflight sees an NVIDIA GeForce RTX 3050 6GB Laptop
   GPU. The endpoint does not report whether inference actually uses the GPU.
 
+## Frozen final held-out evaluation
+
+See [benchmarks/final-evaluation-report.md](benchmarks/final-evaluation-report.md)
+for the full methodology, metadata, interpretation, and limitations.
+
+| Strategy | Resolved | Final tests passed | Mean repair attempts | Mean latency | Mean tokens |
+|---|---:|---:|---:|---:|---:|
+| Single-shot | 10/15 (66.7%) | 10/15 (66.7%) | 0.00 | 10.44 s | 1,012.38 (13 measured) |
+| Fixed retry | 8/15 (53.3%) | 10/15 (66.7%) | 1.07 | 37.01 s | 4,674.55 (11 measured) |
+| Failure-guided | 8/15 (53.3%) | 8/15 (53.3%) | 0.67 | 29.98 s | 4,141.33 (12 measured) |
+
+There were nine budget rejections, zero token overruns, and zero budget
+violations. Fixed-retry had two cases with final tests passing but an
+`unresolved` agent outcome (`py-fix-019`, `py-fix-020`); the metrics preserve
+these separate outcomes because the model did not issue the required finish
+action. Nine task/strategy cases have missing provider token totals, 36 have
+positive measured totals, and zero report zero usage. The five pilot tasks were
+used during development and excluded from the final evaluation.
+
+The per-case log, exact config and dataset snapshots, hashes, and source
+revisions are preserved in
+[benchmarks/evidence/final-held-out/](benchmarks/evidence/final-held-out/).
+See the [audited final evaluation report](benchmarks/final-evaluation-report.md)
+for paired task results, token-accounting caveats, and the response-failure
+taxonomy.
+
 ## Pilot result after budget-controller update (5 tasks)
 
-This pilot predates the failure-classification change below. The classification
-and repeated-failure behavior is covered by the automated tests, but has not
-been rerun against the live model.
+This pilot predates the failure-classification change and is historical; it
+must not be combined with the final held-out results.
 
 The run used `gemma4:e2b`, `device: auto`, max 3 repairs, max 8,192 measured
 tokens, and a 120-second per-task limit. Evaluation results:
@@ -80,8 +104,8 @@ python experiments/analyze_results.py results/latest.jsonl
 
 ## Remaining work and limitations
 
-- The pilot is only five controlled tasks and is not statistically conclusive.
-- The 15 held-out tasks and SWE-bench Verified have not been run.
+- Both the pilot and final benchmark are small controlled task sets and are
+  not statistically conclusive; SWE-bench Verified has not been run.
 - One single-shot task received an empty/malformed model response.
 - Exact prompt tokenization is not available from the configured Ollama
   adapter; the controller uses a conservative estimate and reports overruns.

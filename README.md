@@ -13,35 +13,37 @@ strategies:
 The pilot benchmark is a controlled set of 20 small Python bug-fixing tasks:
 five pilot tasks and 15 held-out tasks. SWE-bench Verified is not required.
 
-## Current readiness
+## Evaluation status
 
-The configured `gemma4:e2b` model is installed and the 5-task pilot has been
-run across all three strategies. The measured pilot results are below. They
-are preliminary observations from only five small controlled tasks, not
-evidence of general performance.
+The frozen final evaluation has completed all 45 cases: each of the 15 held-out
+tasks was run under single-shot, fixed-retry, and failure-guided recovery. The
+five pilot tasks used during development were excluded. Results are small-sample
+observations and do not establish strategy superiority.
 
-| Strategy | Resolved / tests passed | Mean repair attempts | Mean latency | Mean tokens |
-|---|---:|---:|---:|---:|
-| Single-shot | 4/5 (80%) | 0.00 | 11.56 s | 627.75* |
-| Fixed retry | 5/5 (100%) | 0.00 | 21.41 s | 2,815.4 |
-| Failure-guided | 5/5 (100%) | 0.00 | 20.29 s | 2,763.8 |
+| Strategy | Resolved | Final tests passed | Mean repairs | Mean latency | Mean tokens used |
+|---|---:|---:|---:|---:|---:|
+| Single-shot | 10/15 (66.7%) | 10/15 (66.7%) | 0.00 | 10.44 s | 1,012.38 (13 measured) |
+| Fixed retry | 8/15 (53.3%) | 10/15 (66.7%) | 1.07 | 37.01 s | 4,674.55 (11 measured) |
+| Failure-guided | 8/15 (53.3%) | 8/15 (53.3%) | 0.67 | 29.98 s | 4,141.33 (12 measured) |
 
-`*` Single-shot token usage was measured for 4 of 5 tasks; one response was
-empty/malformed, so the provider did not return usable token counts.
+There were nine budget rejections, zero token overruns, and zero cases exceeding
+the configured budgets. Rejections are protected refusals, not violations.
+Fixed-retry had two cases (`py-fix-019`, `py-fix-020`) whose final tests passed
+but whose agent outcome was marked unresolved because the model did not signal
+completion; resolution and final test pass are reported separately. Nine
+task/strategy records have missing provider token totals, 36 have positive
+measured totals, and none report zero usage. Token averages include only cases
+with valid provider-reported usage.
 
-This pilot ran after pre-generation prompt estimation and output reservations
-were implemented. No budget rejection or token-overrun events occurred across
-the 15 task/strategy cases; the largest accounted task used 3,648 of the
-8,192-token budget. The pilot ran on Python 3.14.6 / Windows 11 with an NVIDIA
-GeForce RTX 3050 6GB Laptop GPU. Ollama reported the model at 100% GPU in
-`ollama ps` after the run; AgentFlow's result metadata does not itself report
-the selected device.
-The failure-classification module was added after this pilot; its new
-failure-guided behavior is covered by unit tests but has not been rerun against
-the live model.
-The JSONL records are in `results/latest.jsonl` on the local machine. See
-[PROJECT_STATUS.md](PROJECT_STATUS.md) for run details and remaining
-limitations.
+The run used Gemma `gemma4:e2b` with Ollama 0.40.13, temperature 0.1, 120
+seconds per task, up to three repairs, and an 8,192-token budget. It ran on
+Windows 11 / Python 3.14.6 with an NVIDIA GeForce RTX 3050 Laptop GPU. The
+frozen agent revision is `7e1ab1ea56f93136c1c06dddf22f6b598d263288`; the
+evaluation harness revision is `8fa80e36c93ba62dc033aa418754d2eaa873bda7`.
+See the [audited final evaluation report](benchmarks/final-evaluation-report.md),
+[benchmark protocol](benchmarks/README.md), and the [archived evidence bundle](benchmarks/evidence/final-held-out/).
+The archive preserves the exact JSONL log, config, dataset, their hashes, and
+the source revisions.
 
 ## Failure-guided recovery
 
