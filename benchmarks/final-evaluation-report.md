@@ -182,3 +182,19 @@ downloading a dataset was outside the approved scope, so the independent
 evaluation was deferred. No replacement or synthetic benchmark was created.
 The response-recovery changes therefore have unit/development validation only;
 they have no claimed performance gain or independent task-resolution result.
+
+### Iteration-2 development safety check
+
+The permitted development check used only pilot fixtures `py-fix-001` through
+`py-fix-005`. A deterministic stub returned syntactically valid write-action
+JSON with `done=false`; all five cases verified that the incomplete response
+was rejected before action execution and that fixture files remained
+unchanged. This validates the safety path only: the stub does not measure
+model quality, task resolution, or benchmark performance, and no such
+measurements are claimed.
+
+A live Ollama development check was not available: access to
+`localhost:11434/api/version` was denied by the runtime's domain permission.
+No alternate access path was attempted. The model-quality development
+evaluation remains blocked. No held-out tasks, frozen archive, or independent
+benchmark were run.

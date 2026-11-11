@@ -221,6 +221,7 @@ def _contains_truncated_response(text: str) -> bool:
 def _contains_incomplete_response(text: str) -> bool:
     return (
         "provider termination status is unknown" in text
+        or "provider marked the response incomplete" in text
         or "incomplete_response=true" in text
     )
 

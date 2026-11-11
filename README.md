@@ -181,8 +181,11 @@ unknown fields, unsupported tools, and invalid tool arguments are rejected.
 
 Ollama `done` and `done_reason` metadata are preserved in an allowlisted,
 content-free provider metadata object. A response is called truncated only
-when provider termination metadata supports that conclusion; absent metadata
-is recorded as unknown/incomplete rather than guessed from a JSON parse error.
+when the provider gives a recognized length-limit reason. `done=false` without
+that reason is incomplete, not truncated. Incomplete and unknown-termination
+responses are rejected before parsing or execution, including syntactically
+valid JSON that contains an action or patch. Absent metadata is recorded as
+unknown/incomplete rather than guessed from a JSON parse error.
 Malformed/schema-invalid responses are classified separately and may be
 regenerated subject to the existing budgets. Failure-guided records include
 normalized failure evidence, attempt number, suggested and actual
@@ -201,6 +204,15 @@ agent completion, budget exhaustion, and strict `resolved` status. Passing
 tests without an explicit finish signal remain unresolved with a recorded
 completion reason. Existing aggregate result JSONL records remain readable;
 archived evaluation records are not rewritten.
+
+The response-recovery iteration-2 development protocol uses only pilot fixtures
+`py-fix-001` through `py-fix-005` with a deterministic stub that returns valid
+action JSON marked `done=false`. It checks that all five actions are rejected
+and fixture files remain unchanged. This is a code-correctness/safety check,
+not a model-quality or task-resolution evaluation; no model measurements are
+claimed. Live Ollama development evaluation was blocked because tool access to
+`localhost:11434/api/version` was denied by the runtime's domain permission.
+The frozen held-out tasks and archived evidence were not used.
 
 Optional E4B candidates can be configured under `optional_e4b_models`. A
 candidate is evaluated only if its exact local model tag is already installed,

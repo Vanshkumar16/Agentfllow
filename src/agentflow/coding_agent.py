@@ -194,6 +194,18 @@ class CodingAgent:
                 if budget.stop_reason == "token budget exceeded by the completed model call":
                     attempt_failure_parts.append(budget.stop_reason)
                     break
+                termination_rejection = _response_termination_rejection(response)
+                if termination_rejection is not None:
+                    message, category = termination_rejection
+                    model_log["validation_outcome"] = "invalid"
+                    model_log["validation_phase"] = "termination"
+                    model_log["failure_category"] = category.value
+                    model_log["diagnostic"] = message
+                    attempt.patch_valid = False
+                    attempt.response_valid = False
+                    patch_valid_state = False
+                    attempt_failure_parts.append(message)
+                    break
                 try:
                     action = parse_action_response(
                         response.content,
@@ -574,6 +586,17 @@ class CodingAgent:
             elif response is not None:
                 if budget.stop_reason == "token budget exceeded by the completed model call":
                     failure.append(budget.stop_reason)
+                elif (
+                    termination_rejection := _response_termination_rejection(response)
+                ) is not None:
+                    message, category = termination_rejection
+                    model_log["validation_outcome"] = "invalid"
+                    model_log["validation_phase"] = "termination"
+                    model_log["failure_category"] = category.value
+                    model_log["diagnostic"] = message
+                    attempt.patch_valid = False
+                    attempt.response_valid = False
+                    failure.append(message)
                 else:
                     try:
                         patch_response = parse_patch_response(response.content)
@@ -1153,10 +1176,32 @@ def _termination_status(response: ModelResponse) -> str:
     if reason in {"length", "max_tokens", "max_output_tokens", "truncated"}:
         return "truncated"
     if response.done is False:
-        return "truncated"
+        return "incomplete"
     if response.done is True or reason in {"stop", "complete", "completed"}:
         return "complete"
     return "unknown"
+
+
+def _response_termination_rejection(
+    response: ModelResponse,
+) -> tuple[str, FailureCategory] | None:
+    status = _termination_status(response)
+    if status == "complete":
+        return None
+    if status == "truncated":
+        return (
+            "Provider-confirmed truncated response: provider termination indicates an output length limit.",
+            FailureCategory.TRUNCATED_RESPONSE,
+        )
+    if response.done is False:
+        return (
+            "Provider marked the response incomplete (done=false); the termination reason does not confirm length truncation.",
+            FailureCategory.INCOMPLETE_RESPONSE,
+        )
+    return (
+        "Provider termination status is unknown; response is treated as incomplete.",
+        FailureCategory.INCOMPLETE_RESPONSE,
+    )
 
 
 def _response_validation_message(
@@ -1165,10 +1210,15 @@ def _response_validation_message(
     status = _termination_status(response)
     if status == "truncated":
         return f"Provider-confirmed truncated response: {error}"
+    if status != "complete":
+        reason = (
+            "Provider marked the response incomplete (done=false)"
+            if response.done is False
+            else "Provider termination status is unknown"
+        )
+        return f"{reason}; response may be incomplete: {error}"
     if error.phase == "schema":
         return f"Response schema validation failed: {error}"
-    if status == "unknown":
-        return f"Provider termination status is unknown; response may be incomplete: {error}"
     return f"Malformed response: {error}"
 
 
@@ -1178,10 +1228,10 @@ def _response_failure_category(
     status = _termination_status(response)
     if status == "truncated":
         return FailureCategory.TRUNCATED_RESPONSE
+    if status != "complete":
+        return FailureCategory.INCOMPLETE_RESPONSE
     if error.phase == "schema":
         return FailureCategory.SCHEMA_VALIDATION
-    if status == "unknown":
-        return FailureCategory.INCOMPLETE_RESPONSE
     return FailureCategory.MALFORMED_RESPONSE
 
 

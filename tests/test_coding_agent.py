@@ -24,7 +24,7 @@ class FakeModel:
             raise response
         if isinstance(response, ModelResponse):
             return response
-        return ModelResponse(response, input_tokens=12, output_tokens=8)
+        return ModelResponse(response, input_tokens=12, output_tokens=8, done=True)
 
 
 def _action(tool, arguments=None):
@@ -244,7 +244,12 @@ async def test_malformed_response_gets_controlled_regeneration_guidance(tmp_path
         "from solution import add\n\ndef test_add():\n    assert add(2, 3) == 5\n",
         encoding="utf-8",
     )
-    model = FakeModel(["not json", _action("finish")])
+    model = FakeModel(
+        [
+            ModelResponse("not json", input_tokens=12, output_tokens=8, done=True),
+            _action("finish"),
+        ]
+    )
     workspace = WorkspaceTools(
         tmp_path, allow_tests=True, test_command=(sys.executable, "-m", "pytest", "-q")
     )
@@ -260,12 +265,12 @@ async def test_malformed_response_gets_controlled_regeneration_guidance(tmp_path
     ).run("Confirm add returns the sum.")
 
     assert result.resolved is True
-    assert result.attempts[0].failure_category == FailureCategory.INCOMPLETE_RESPONSE.value
+    assert result.attempts[0].failure_category == FailureCategory.MALFORMED_RESPONSE.value
     assert "controlled regeneration" in result.attempts[0].recovery_action
-    assert "Failure category: incomplete_response" in model.prompts[1]
+    assert "Failure category: empty_or_malformed_response" in model.prompts[1]
     assert "exactly the required JSON schema" in model.prompts[1]
     model_log = result.per_call_logs[0]
-    assert model_log["response_termination"] == "unknown"
+    assert model_log["response_termination"] == "complete"
     assert model_log["validation_outcome"] == "invalid"
     assert model_log["experiment_id"] is None
     assert model_log["task_id"] is None
@@ -399,7 +404,7 @@ async def test_invalid_action_schema_is_rejected_before_tool_execution(tmp_path)
 @pytest.mark.asyncio
 async def test_provider_truncation_is_distinguished_from_unknown_termination(tmp_path):
     truncated_model = FakeModel(
-        [ModelResponse("not json", 12, 8, done=False)]
+        [ModelResponse("not json", 12, 8, done=False, done_reason="length")]
     )
     truncated = await CodingAgent(
         truncated_model,
@@ -413,9 +418,11 @@ async def test_provider_truncation_is_distinguished_from_unknown_termination(tmp
     assert truncated.attempts[0].failure_category == FailureCategory.TRUNCATED_RESPONSE.value
     assert truncated.per_call_logs[0]["response_termination"] == "truncated"
 
-    unknown_model = FakeModel(["not json"])
+    incomplete_model = FakeModel(
+        [ModelResponse("not json", 12, 8, done=False)]
+    )
     unknown = await CodingAgent(
-        unknown_model,
+        incomplete_model,
         WorkspaceTools(tmp_path),
         CodingAgentConfig(
             budgets=BudgetLimits(max_repair_attempts=0),
@@ -424,8 +431,60 @@ async def test_provider_truncation_is_distinguished_from_unknown_termination(tmp
     ).run("Handle invalid JSON with no termination metadata.")
 
     assert unknown.attempts[0].failure_category == FailureCategory.INCOMPLETE_RESPONSE.value
-    assert unknown.per_call_logs[0]["response_termination"] == "unknown"
+    assert unknown.per_call_logs[0]["response_termination"] == "incomplete"
     assert "truncated" not in unknown.attempts[0].failure.lower()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("single_shot", [False, True])
+async def test_valid_json_from_incomplete_provider_is_never_applied(tmp_path, single_shot):
+    if single_shot:
+        content = json.dumps(
+            {
+                "complete": True,
+                "patches": [
+                    {"path": "must-not-exist.py", "content": "value = 1"}
+                ],
+            }
+        )
+    else:
+        content = _action(
+            "write_file",
+            {"path": "must-not-exist.py", "content": "value = 1"},
+        )
+    model = FakeModel(
+        [
+            ModelResponse(
+                content,
+                input_tokens=12,
+                output_tokens=8,
+                done=False,
+                done_reason="stop",
+            )
+        ]
+    )
+    result = await CodingAgent(
+        model,
+        WorkspaceTools(tmp_path),
+        CodingAgentConfig(
+            strategy=(
+                RecoveryStrategy.SINGLE_SHOT
+                if single_shot
+                else RecoveryStrategy.FAILURE_GUIDED
+            ),
+            budgets=BudgetLimits(max_repair_attempts=0),
+            max_actions_per_attempt=1,
+        ),
+    ).run("Reject any payload from an incomplete provider response.")
+
+    assert not (tmp_path / "must-not-exist.py").exists()
+    assert result.resolved is False
+    assert result.explicit_completion is False
+    assert result.attempts[0].failure_category == FailureCategory.INCOMPLETE_RESPONSE.value
+    model_log = next(call for call in result.per_call_logs if call["call_type"] == "model")
+    assert model_log["validation_outcome"] == "invalid"
+    assert model_log["validation_phase"] == "termination"
+    assert model_log["failure_category"] == FailureCategory.INCOMPLETE_RESPONSE.value
 
 
 @pytest.mark.asyncio
