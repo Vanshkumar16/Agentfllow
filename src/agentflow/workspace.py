@@ -14,6 +14,9 @@ from typing import Any
 class WorkspaceError(RuntimeError):
     """Raised when an operation is invalid or escapes the configured workspace."""
 
+    def __init__(self, message: str, *, timed_out: bool = False) -> None:
+        super().__init__(message)
+        self.timed_out = timed_out
 
 @dataclass(frozen=True)
 class CommandResult:

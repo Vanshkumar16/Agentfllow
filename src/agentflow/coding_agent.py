@@ -265,8 +265,23 @@ class CodingAgent:
                             budget.remaining_seconds,
                         ),
                     )
-                    action_record = {"tool": tool_name, "arguments": action["arguments"], "output": output}
-                    tool_status = "succeeded"
+                    action_record = {
+                        "tool": tool_name,
+                        "arguments": action["arguments"],
+                        "output": output,
+                    }
+
+                    if (
+                        tool_name == "run_command"
+                        and isinstance(output, dict)
+                        and output.get("timed_out") is True
+                    ):
+                        command = output.get("command", [])
+                        timeout_error = f"Command timed out: {' '.join(command)}"
+                        attempt_failure_parts.append(timeout_error)
+                        tool_status = "timed_out"
+                    else:
+                        tool_status = "succeeded"
                 except (WorkspaceError, OSError, ValueError) as exc:
                     error = f"{type(exc).__name__}: {exc}"
                     action_record = {
@@ -275,7 +290,10 @@ class CodingAgent:
                         "error": error,
                     }
                     attempt_failure_parts.append(error)
-                    tool_status = "failed"
+                    if tool_name == "run_command" and getattr(exc, "timed_out", False):
+                        tool_status = "timed_out"
+                    else:
+                        tool_status = "failed"
                 attempt.actions.append(action_record)
                 if tool_name == "write_file":
                     attempt.patch_valid = tool_status == "succeeded"
@@ -297,6 +315,8 @@ class CodingAgent:
                         tool=tool_name,
                     )
                 )
+                if tool_status == "timed_out":
+                    break
                 if tool_status == "failed":
                     if tool_name == "write_file":
                         attempt.patch_valid = False
@@ -823,7 +843,8 @@ class CodingAgent:
             if not result.succeeded:
                 raise WorkspaceError(
                     f"Command failed (returncode={result.returncode}, "
-                    f"timed_out={result.timed_out}): {result.stderr or result.stdout}"
+                    f"timed_out={result.timed_out}): {result.stderr or result.stdout}",
+                    timed_out=result.timed_out,
                 )
             return result.to_dict()
         raise WorkspaceError(f"Unknown action '{tool_name}'.")
