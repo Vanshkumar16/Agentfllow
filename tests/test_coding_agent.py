@@ -1,3 +1,4 @@
+import asyncio
 import json
 import sys
 
@@ -408,6 +409,76 @@ async def test_failure_guided_stops_timeout_replan_at_attempt_limit(tmp_path, mo
     assert result.budget["model_calls"] == 1
     assert result.attempts[0].recovery_plan["decision"] == "STOP"
     assert result.attempts[0].recovery_decision == "stop: repair-attempt limit reached"
+
+
+@pytest.mark.asyncio
+async def test_failure_guided_stops_timeout_replan_when_tokens_are_insufficient(
+    tmp_path, monkeypatch
+):
+    model = FakeModel([TimeoutError("model request timed out")])
+    workspace = WorkspaceTools(tmp_path, allow_tests=True)
+    monkeypatch.setattr(
+        workspace,
+        "run_tests",
+        lambda timeout: pytest.fail("Tests must not run after the model times out."),
+    )
+
+    result = await CodingAgent(
+        model,
+        workspace,
+        CodingAgentConfig(
+            strategy=RecoveryStrategy.FAILURE_GUIDED,
+            budgets=BudgetLimits(
+                max_tokens=1200,
+                max_output_tokens_per_call=1024,
+            ),
+        ),
+    ).run("Fix the task.")
+
+    assert len(result.attempts) == 1
+    assert result.budget["model_calls"] == 1
+    assert result.budget["remaining_tokens"] < 256
+    assert result.attempts[0].recovery_plan["decision"] == "STOP"
+    assert result.attempts[0].recovery_decision == (
+        "stop: timeout replan unavailable; remaining token budget is below the repair threshold"
+    )
+
+
+@pytest.mark.asyncio
+async def test_failure_guided_stops_timeout_replan_when_time_is_insufficient(
+    tmp_path, monkeypatch
+):
+    class DelayedTimeoutModel:
+        async def complete(self, prompt, max_output_tokens, timeout):
+            await asyncio.sleep(0.02)
+            raise TimeoutError("model request timed out")
+
+    workspace = WorkspaceTools(tmp_path, allow_tests=True)
+    monkeypatch.setattr(
+        workspace,
+        "run_tests",
+        lambda timeout: pytest.fail("Tests must not run after the model times out."),
+    )
+
+    result = await CodingAgent(
+        DelayedTimeoutModel(),
+        workspace,
+        CodingAgentConfig(
+            strategy=RecoveryStrategy.FAILURE_GUIDED,
+            budgets=BudgetLimits(
+                task_timeout_seconds=0.01,
+                model_timeout_seconds=0.01,
+                min_repair_seconds=0.001,
+            ),
+        ),
+    ).run("Fix the task.")
+
+    assert len(result.attempts) == 1
+    assert result.budget["model_calls"] == 1
+    assert result.attempts[0].recovery_plan["decision"] == "STOP"
+    assert result.attempts[0].recovery_decision == (
+        "stop: timeout replan unavailable; remaining time is below the repair threshold"
+    )
 
 
 @pytest.mark.asyncio
