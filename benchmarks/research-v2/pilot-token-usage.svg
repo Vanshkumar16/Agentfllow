@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="900" height="300" viewBox="0 0 900 300">
 <rect width="100%" height="100%" fill="white"/>
 <text x="24" y="34" font-family="Arial,sans-serif" font-size="22" font-weight="bold">V2 pilot: mean charged tokens</text>
-<text x="24" y="60" font-family="Arial,sans-serif" font-size="13" fill="#444">Tokens per task; provider usage coverage varies by strategy.</text>
+<text x="24" y="60" font-family="Arial,sans-serif" font-size="13" fill="#444">Tokens per task; provider usage coverage is 100% after excluding pre-inference budget rejections.</text>
 <text x="208" y="113" text-anchor="end" font-family="Arial,sans-serif" font-size="15">single-shot</text>
 <rect x="220" y="92" width="580" height="30" rx="4" fill="#eeeeee"/>
 <rect x="220" y="92" width="116.98" height="30" rx="4" fill="#4c78a8"/>

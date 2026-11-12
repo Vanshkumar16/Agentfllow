@@ -409,7 +409,7 @@ def prepare(raw_path: Path, output_dir: Path, *, force: bool = False) -> None:
     _svg_bar_chart(
         destination / "pilot-token-usage.svg",
         "V2 pilot: mean charged tokens",
-        "Tokens per task; provider usage coverage varies by strategy.",
+        "Tokens per task; provider usage coverage is 100% after excluding pre-inference budget rejections.",
         token_values,
         max(1, max(value for _, value in token_values) * 1.15),
         "",
@@ -481,11 +481,12 @@ controls case ordering, not model sampling. Device selection was requested as
 
 There are 15 result records: five tasks under each strategy, one repetition,
 with no missing cases in the saved pilot log. Strict resolution and final test
-pass are distinct outcomes. Token totals are provider-reported and usage-call
-coverage is not 100% for every strategy. The effective inference device and
-Ollama version at execution time were not recorded in the raw log. Five tasks
-and one repetition are only a protocol/logging pilot; confidence intervals or
-paired differences here are not a basis for a superiority claim.
+pass are distinct outcomes. Token totals are provider-reported; after excluding
+pre-inference budget-rejected attempts, all provider-call attempts in this pilot
+have usage telemetry. The effective inference device and Ollama version at
+execution time were not recorded in the raw log. Five tasks and one repetition
+are only a protocol/logging pilot; confidence intervals or paired differences
+here are not a basis for a superiority claim.
 
 The six token-budget-rejected model-call attempts were rejected before inference
 and are excluded from the provider-usage coverage denominator. They are reported

@@ -63,11 +63,12 @@ controls case ordering, not model sampling. Device selection was requested as
 
 There are 15 result records: five tasks under each strategy, one repetition,
 with no missing cases in the saved pilot log. Strict resolution and final test
-pass are distinct outcomes. Token totals are provider-reported and usage-call
-coverage is not 100% for every strategy. The effective inference device and
-Ollama version at execution time were not recorded in the raw log. Five tasks
-and one repetition are only a protocol/logging pilot; confidence intervals or
-paired differences here are not a basis for a superiority claim.
+pass are distinct outcomes. Token totals are provider-reported; after excluding
+pre-inference budget-rejected attempts, all provider-call attempts in this pilot
+have usage telemetry. The effective inference device and Ollama version at
+execution time were not recorded in the raw log. Five tasks and one repetition
+are only a protocol/logging pilot; confidence intervals or paired differences
+here are not a basis for a superiority claim.
 
 The six token-budget-rejected model-call attempts were rejected before inference
 and are excluded from the provider-usage coverage denominator. They are reported
