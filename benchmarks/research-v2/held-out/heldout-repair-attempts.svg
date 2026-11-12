@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="300" viewBox="0 0 900 300">
+<rect width="100%" height="100%" fill="white"/>
+<text x="24" y="34" font-family="Arial,sans-serif" font-size="22" font-weight="bold">Held-out repair attempts</text>
+<text x="24" y="60" font-family="Arial,sans-serif" font-size="13" fill="#444">Mean repair attempts per result case</text>
+<text x="208" y="113" text-anchor="end" font-family="Arial,sans-serif" font-size="15">single-shot</text>
+<rect x="220" y="92" width="580" height="30" rx="4" fill="#eeeeee"/>
+<rect x="220" y="92" width="0.00" height="30" rx="4" fill="#4c78a8"/>
+<text x="812" y="113" font-family="Arial,sans-serif" font-size="15">0</text>
+<text x="208" y="177" text-anchor="end" font-family="Arial,sans-serif" font-size="15">fixed-retry</text>
+<rect x="220" y="156" width="580" height="30" rx="4" fill="#eeeeee"/>
+<rect x="220" y="156" width="580.00" height="30" rx="4" fill="#f58518"/>
+<text x="812" y="177" font-family="Arial,sans-serif" font-size="15">1.54286</text>
+<text x="208" y="241" text-anchor="end" font-family="Arial,sans-serif" font-size="15">failure-guided</text>
+<rect x="220" y="220" width="580" height="30" rx="4" fill="#eeeeee"/>
+<rect x="220" y="220" width="332.96" height="30" rx="4" fill="#54a24b"/>
+<text x="812" y="241" font-family="Arial,sans-serif" font-size="15">0.885714</text>
+<text x="220" y="280" font-family="Arial,sans-serif" font-size="12" fill="#555">0</text><text x="800" y="280" text-anchor="end" font-family="Arial,sans-serif" font-size="12" fill="#555">1.54286</text>
+</svg>

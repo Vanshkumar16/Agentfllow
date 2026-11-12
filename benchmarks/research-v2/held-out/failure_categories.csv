@@ -1,0 +1,10 @@
+model,strategy,failure_category,count
+gemma4:e2b,failure-guided,repeated_identical_failure,39
+gemma4:e2b,failure-guided,test_assertion_failure,52
+gemma4:e2b,failure-guided,truncated_response,84
+gemma4:e2b,fixed-retry,schema_validation_failure,1
+gemma4:e2b,fixed-retry,syntax_error,1
+gemma4:e2b,fixed-retry,test_assertion_failure,83
+gemma4:e2b,fixed-retry,truncated_response,153
+gemma4:e2b,fixed-retry,unknown,6
+gemma4:e2b,single-shot,truncated_response,99

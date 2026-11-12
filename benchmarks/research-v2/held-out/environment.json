@@ -1,0 +1,133 @@
+{
+  "artifact_preparation_versions": {
+    "pytest": "9.1.1",
+    "python": "3.12.10",
+    "pyyaml": "6.0.3"
+  },
+  "artifact_prepared_at": "2026-11-12T06:50:21.708032+00:00",
+  "reproducibility": {
+    "completion": {
+      "completed_at": "2026-11-12T06:46:15.513677+00:00",
+      "completed_models": [
+        "gemma4:e2b"
+      ],
+      "expected_result_count": 315,
+      "experiment_id": "7219b43ffc9a4ead8fec45a59c45b874",
+      "random_seed": 20261113,
+      "record_type": "evaluation_complete",
+      "repetitions": 3,
+      "result_count": 315,
+      "scheduled_case_count_per_model": 315,
+      "status": "complete",
+      "strategies": [
+        "single-shot",
+        "fixed-retry",
+        "failure-guided"
+      ],
+      "task_count": 35
+    },
+    "config_sha256": "2008d3eb447ee98b9212078c6cadd4f5b8e1064f13fda853cc73dc55802620c9",
+    "dataset_sha256": "dece185db26d52aadce87df77a9b3726dc529c4f0b16a543f455c112160b1a39",
+    "experiment_id": "7219b43ffc9a4ead8fec45a59c45b874",
+    "git_commit_hash": "8a649d4b6cb9b497556db747a1962fb7a91f39ca",
+    "git_worktree_clean": true,
+    "random_seed": 20261113,
+    "random_seed_scope": "task/strategy execution order; not the model runtime",
+    "raw_log_sha256": "d9aa01cf08172116a2cdf385a64051465ac9068485dfbfa493df4fdad3945ce0",
+    "repetitions": 3,
+    "result_count": 315,
+    "split": "held-out",
+    "task_count": 35
+  },
+  "runtime": {
+    "budgets": {
+      "command_timeout_seconds": 30,
+      "max_model_calls": 16,
+      "max_output_tokens_per_call": 1024,
+      "max_repair_attempts": 3,
+      "max_test_runs": 4,
+      "max_tokens": 8192,
+      "max_tool_calls": 24,
+      "min_repair_seconds": 10,
+      "min_repair_tokens": 256,
+      "model_timeout_seconds": 60,
+      "task_timeout_seconds": 120
+    },
+    "device_requested": "auto",
+    "device_selected": null,
+    "device_selection_note": "Effective device is not exposed as a dedicated API field; Ollama process-list observations are recorded separately.",
+    "gpus": [
+      {
+        "driver_version": "616.92",
+        "free_vram_mib": 5731,
+        "name": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+        "total_vram_mib": 6144
+      }
+    ],
+    "model": "gemma4:e2b",
+    "model_inventory": {
+      "gemma4:e2b": {
+        "details": {
+          "context_length": 131072,
+          "embedding_length": 1536,
+          "families": [
+            "gemma4"
+          ],
+          "family": "gemma4",
+          "format": "gguf",
+          "parameter_size": "4.6B",
+          "parent_model": "gemma4-validation-20260929:e2b-imatrix-attention-q6-q8-draft2",
+          "quantization_level": "Q4_K_M",
+          "runner": "llamacpp"
+        },
+        "digest": "b37049369adfe3d2b653af0ab301a062ca5cbe96ace6aa0d3f2559ee9b563fc2",
+        "modified_at": "2026-11-11T04:47:40.818879+05:30",
+        "size": 4587156505
+      },
+      "qwen2.5:7b": {
+        "details": {
+          "context_length": 32768,
+          "embedding_length": 3584,
+          "families": [
+            "qwen2"
+          ],
+          "family": "qwen2",
+          "format": "gguf",
+          "parameter_size": "7.6B",
+          "parent_model": "",
+          "quantization_level": "Q4_K_M",
+          "runner": "ggml"
+        },
+        "digest": "845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e",
+        "modified_at": "2026-10-01T13:15:25.3318252+05:30",
+        "size": 4683087332
+      }
+    },
+    "ollama_cli_version": "ollama version is 0.40.13",
+    "ollama_server_version": "0.40.13",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+    "python": "3.12.10",
+    "runtime_observations": [
+      {
+        "observed_at": "2026-11-12T04:11:04.247772+00:00",
+        "ollama_processes": "NAME    ID    SIZE    PROCESSOR    CONTEXT    RUNNER    UNTIL",
+        "phase": "before_execution",
+        "record_type": "runtime_observation"
+      },
+      {
+        "observed_at": "2026-11-12T04:12:14.938825+00:00",
+        "ollama_processes": "NAME          ID              SIZE      PROCESSOR    CONTEXT    RUNNER      UNTIL              \ngemma4:e2b    b37049369adf    326 MB    100% GPU     4096       llamacpp    4 minutes from now",
+        "phase": "after_first_case",
+        "record_type": "runtime_observation"
+      },
+      {
+        "observed_at": "2026-11-12T06:46:15.447659+00:00",
+        "ollama_processes": "NAME          ID              SIZE      PROCESSOR    CONTEXT    RUNNER      UNTIL              \ngemma4:e2b    b37049369adf    326 MB    100% GPU     4096       llamacpp    4 minutes from now",
+        "phase": "after_execution",
+        "record_type": "runtime_observation"
+      }
+    ],
+    "temperature": 0.1
+  }
+}

@@ -1,0 +1,4 @@
+model,strategy,result_cases,budget_rejection_events,budget_rejections_by_kind,budget_violation_cases,budget_violation_rate,budget_violation_reasons,provider_call_attempts,budget_rejected_model_call_attempts,missing_model_usage_calls,reported_usage_call_coverage,missing_result_token_usage_cases
+gemma4:e2b,failure-guided,105,43,"{""tokens"": 43}",0,0.0,{},559,43,0,1.0,0
+gemma4:e2b,fixed-retry,105,82,"{""tokens"": 82}",0,0.0,{},669,82,0,1.0,0
+gemma4:e2b,single-shot,105,0,{},0,0.0,{},105,0,0,1.0,0

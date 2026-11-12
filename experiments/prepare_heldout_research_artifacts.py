@@ -294,6 +294,29 @@ def _write_readme(
     raw_sha256: str,
 ) -> None:
     metadata = validated["metadata"]
+    strategy_statistics = {
+        (row["model"], row["strategy"]): row["metrics"]
+        for row in report["statistical_analysis"]["strategy_estimates"]
+    }
+
+    def rate_interval_text(mean: float, interval: dict[str, float] | None) -> str:
+        if interval is None:
+            return f"{mean:.1%} (CI unavailable)"
+        return (
+            f"{mean:.1%} [{interval['lower']:.1%}, "
+            f"{interval['upper']:.1%}]"
+        )
+
+    def difference_interval_text(summary: dict[str, Any]) -> str:
+        interval = summary["confidence_interval_95"]
+        if interval is None or summary["mean"] is None:
+            return "not estimable"
+        return (
+            f"{summary['mean'] * 100:+.1f} pp "
+            f"[{interval['lower'] * 100:+.1f}, "
+            f"{interval['upper'] * 100:+.1f}]"
+        )
+
     lines = [
         "# AgentFlow independent benchmark v2: held-out evaluation",
         "",
@@ -338,16 +361,47 @@ def _write_readme(
         "and task-clustered 95% confidence intervals are descriptive; no strategy",
         "is claimed superior without evidence supporting that conclusion.",
         "",
-        "| Strategy | Strict resolution | Final tests passed | Mean repairs | Mean latency (s) | Mean tokens | Usage coverage |",
-        "|---|---:|---:|---:|---:|---:|---:|",
+        "| Strategy | Strict resolution (95% task CI) | Final tests passed (95% task CI) | Mean repairs | Mean latency (s) | Mean tokens | Usage coverage | Rejected calls | Violations |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for run in report["runs"]:
         usage = run["token_usage"]["reported_usage_call_coverage"]
         usage_text = f"{usage:.1%}" if usage is not None else "not measured"
+        metrics = strategy_statistics[(run["model"], run["strategy"])]
         lines.append(
-            f"| {run['strategy']} | {run['strict_resolution_rate']:.1%} | "
-            f"{run['final_test_pass_rate']:.1%} | {run['mean_repair_attempts']} | "
-            f"{run['mean_latency_seconds']} | {run['mean_tokens_used']} | {usage_text} |"
+            f"| {run['strategy']} | "
+            f"{rate_interval_text(run['strict_resolution_rate'], metrics['strict_resolution']['confidence_interval_95'])} | "
+            f"{rate_interval_text(run['final_test_pass_rate'], metrics['final_test_passed']['confidence_interval_95'])} | "
+            f"{run['mean_repair_attempts']:.2f} | "
+            f"{run['mean_latency_seconds']:.2f} | {run['mean_tokens_used']:.0f} | "
+            f"{usage_text} | "
+            f"{run['token_usage']['budget_rejected_model_call_attempts']} | "
+            f"{run['budget_violation_cases']} |"
+        )
+    lines.extend(
+        [
+            "",
+            "## Paired strategy differences",
+            "",
+            "Each estimate is strategy A minus strategy B in percentage points; negative",
+            "values favor strategy B for these success-rate metrics.",
+            "",
+            "| Pair | Matched tasks | Strict resolution difference (95% task CI) | Final test-pass difference (95% task CI) |",
+            "|---|---:|---:|---:|",
+        ]
+    )
+    for comparison in report["paired_comparisons"]:
+        strict = comparison["mean_difference_across_paired_cases"][
+            "strict_resolution"
+        ]
+        final_tests = comparison["mean_difference_across_paired_cases"][
+            "final_test_passed"
+        ]
+        lines.append(
+            f"| {comparison['strategy_a']} vs {comparison['strategy_b']} | "
+            f"{comparison['matched_task_count']} | "
+            f"{difference_interval_text(strict)} | "
+            f"{difference_interval_text(final_tests)} |"
         )
     lines.extend(
         [
@@ -356,6 +410,7 @@ def _write_readme(
             "",
             f"- Strategy estimates use a seeded task-clustered percentile bootstrap with {report['statistical_analysis']['bootstrap_samples']:,} resamples; repetitions remain within each sampled task.",
             "- Paired comparisons first match strategy observations by task and repetition, average differences within task, and then bootstrap tasks. The evaluator reports matched task/repetition counts and missing metric coverage.",
+            "- Pairwise intervals are exploratory and are not multiplicity-adjusted; they are not by themselves a confirmatory superiority test.",
             "- Repetition-level means and standard deviations are reported separately from task-clustered estimates.",
             "- Provider usage coverage excludes budget-rejected calls, which are reported separately. Missing provider usage and missing result-level token totals are reported explicitly.",
             "- Budget rejection events and budget violations are distinct and shown in `budget_analysis.csv`.",
@@ -482,6 +537,9 @@ def prepare(
     analysis = {
         "statistical_analysis": report["statistical_analysis"],
         "paired_comparisons": report["paired_comparisons"],
+        "multiple_comparison_adjustment": (
+            "None; pairwise intervals are exploratory, not confirmatory."
+        ),
     }
     (destination / "statistical_analysis.json").write_text(
         json.dumps(analysis, indent=2, sort_keys=True) + "\n", encoding="utf-8"

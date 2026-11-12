@@ -445,6 +445,7 @@ def test_heldout_artifact_generator_preserves_raw_log_and_prevents_overwrite(
     assert "missing_result_token_usage_cases" in summary.splitlines()[0]
     readme = (output_dir / "README.md").read_text(encoding="utf-8")
     assert "no strategy" in readme
+    assert "not multiplicity-adjusted" in readme
     with pytest.raises(FileExistsError, match="already exist"):
         prepare_heldout_artifacts(raw_path, output_dir)
 
