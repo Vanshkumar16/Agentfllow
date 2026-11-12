@@ -133,18 +133,31 @@ The default run evaluates the five-task pilot across all three strategies. Run
 the 15 held-out tasks only after reviewing the pilot:
 
 ```powershell
-python experiments/run_experiment.py --split pilot
-python experiments/evaluate.py results/latest.jsonl
-python experiments/analyze_results.py results/latest.jsonl
+python experiments/run_experiment.py --split pilot --repetitions 3 --seed 20261112 `
+  --output results/pilot-repetitions.jsonl
+python experiments/evaluate.py results/pilot-repetitions.jsonl
+python experiments/analyze_results.py results/pilot-repetitions.jsonl
 python experiments/run_experiment.py --split held-out --output results/held-out.jsonl
 ```
 
 Each task/strategy run starts from a fresh workspace copy and fresh budgets.
+The runner shuffles task/strategy order from the supplied seed for each
+repetition and records repetition IDs, execution order, Git commit, dataset and
+configuration hashes, and the seed in the JSONL. It refuses to overwrite an
+existing output file; choose a new `--output` path for each run. The YAML
+`max_actions_per_attempt` and `max_prompt_chars` values are applied to the
+coding agent.
 Reports include resolution rate, final test pass rate, attempts, latency, model
 calls, tool calls, test runs, token counts when the local provider reports them,
 and measured hardware details. Monetary cost is reported as unavailable for
 local inference. If the provider does not supply token usage, token metrics are
 `null`; they are not estimated or fabricated.
+
+The evaluator keeps strict `resolved` status separate from final test pass
+rate. It reports per-task and across-repetition summaries, 95% confidence
+intervals, and paired task/repetition comparisons between strategies. Token
+usage coverage and missing usage, budget rejections, and detected budget
+violations are reported separately.
 
 After running the pilot, refresh the summary with the evaluation and analysis
 commands above, then update the measured results in this README if you rerun

@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import math
 import platform
+import random
 import re
 import subprocess
 import sys
@@ -27,32 +29,34 @@ STRATEGIES = (
     RecoveryStrategy.FIXED_RETRY,
     RecoveryStrategy.FAILURE_GUIDED,
 )
+DEFAULT_RANDOM_SEED = 20261112
 
 
-def load_tasks(path: Path) -> list[dict[str, Any]]:
+def load_tasks(path: Path, *, content: bytes | None = None) -> list[dict[str, Any]]:
     tasks: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
-    with path.open(encoding="utf-8") as file:
-        for line_number, line in enumerate(file, start=1):
-            if not line.strip():
-                continue
-            try:
-                task = json.loads(line)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"Invalid JSON on line {line_number}: {exc}") from exc
-            if not isinstance(task, dict):
-                raise ValueError(f"Benchmark line {line_number} must be a JSON object.")
-            task_id, goal, files = task.get("id"), task.get("goal"), task.get("files")
-            if not isinstance(task_id, str) or not task_id or task_id in seen_ids:
-                raise ValueError(f"Benchmark line {line_number} has a missing or duplicate id.")
-            if not isinstance(goal, str) or not goal.strip():
-                raise ValueError(f"Benchmark task '{task_id}' has no non-empty goal.")
-            if not isinstance(files, dict) or not files:
-                raise ValueError(f"Benchmark task '{task_id}' must include a files object.")
-            if any(not isinstance(name, str) or not isinstance(text, str) for name, text in files.items()):
-                raise ValueError(f"Benchmark task '{task_id}' files must map paths to text.")
-            seen_ids.add(task_id)
-            tasks.append(task)
+    if content is None:
+        content = path.read_bytes()
+    for line_number, line in enumerate(content.decode("utf-8").splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            task = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid JSON on line {line_number}: {exc}") from exc
+        if not isinstance(task, dict):
+            raise ValueError(f"Benchmark line {line_number} must be a JSON object.")
+        task_id, goal, files = task.get("id"), task.get("goal"), task.get("files")
+        if not isinstance(task_id, str) or not task_id or task_id in seen_ids:
+            raise ValueError(f"Benchmark line {line_number} has a missing or duplicate id.")
+        if not isinstance(goal, str) or not goal.strip():
+            raise ValueError(f"Benchmark task '{task_id}' has no non-empty goal.")
+        if not isinstance(files, dict) or not files:
+            raise ValueError(f"Benchmark task '{task_id}' must include a files object.")
+        if any(not isinstance(name, str) or not isinstance(text, str) for name, text in files.items()):
+            raise ValueError(f"Benchmark task '{task_id}' files must map paths to text.")
+        seen_ids.add(task_id)
+        tasks.append(task)
     if len(tasks) < 6:
         raise ValueError("Benchmark needs at least 6 tasks to provide a 5-task pilot and held-out split.")
     return tasks
@@ -122,6 +126,9 @@ async def _run_case(
     strategy: RecoveryStrategy,
     limits: BudgetLimits,
     experiment_id: str | None = None,
+    *,
+    max_actions_per_attempt: int = 8,
+    max_prompt_chars: int = 24_000,
 ) -> dict[str, Any]:
     with TemporaryDirectory(prefix=f"agentflow-{task['id']}-") as temp_dir:
         workspace_path = Path(temp_dir)
@@ -134,7 +141,12 @@ async def _run_case(
         agent = CodingAgent(
             model,
             workspace,
-            CodingAgentConfig(strategy=strategy, budgets=limits),
+            CodingAgentConfig(
+                strategy=strategy,
+                budgets=limits,
+                max_actions_per_attempt=max_actions_per_attempt,
+                max_prompt_chars=max_prompt_chars,
+            ),
         )
         result = await agent.run(
             task["goal"],
@@ -239,17 +251,34 @@ async def run(
     output_path: Path,
     config_path: Path,
     split: str = "pilot",
+    repetitions: int = 1,
+    random_seed: int = DEFAULT_RANDOM_SEED,
 ) -> None:
     import yaml
 
+    if not isinstance(repetitions, int) or isinstance(repetitions, bool) or repetitions < 1:
+        raise ValueError("repetitions must be a positive integer.")
+    if not isinstance(random_seed, int) or isinstance(random_seed, bool):
+        raise ValueError("random_seed must be an integer.")
+    if output_path.exists():
+        raise FileExistsError(
+            f"Refusing to overwrite experiment results: {output_path}"
+        )
+
     try:
-        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        config_bytes = config_path.read_bytes()
+        config = yaml.safe_load(config_bytes)
     except OSError as exc:
         raise RuntimeError(f"Could not read config file '{config_path}': {exc}") from exc
     except yaml.YAMLError as exc:
         raise ValueError(f"Invalid YAML in config file '{config_path}': {exc}") from exc
     if not isinstance(config, dict):
         raise ValueError(f"Config file '{config_path}' must contain a YAML object.")
+    try:
+        dataset_bytes = tasks_path.read_bytes()
+    except OSError as exc:
+        raise RuntimeError(f"Could not read task dataset '{tasks_path}': {exc}") from exc
+    tasks = load_tasks(tasks_path, content=dataset_bytes)
 
     model_config = config.get("model", {})
     budget_config = config.get("budgets", {})
@@ -297,19 +326,81 @@ async def run(
             0, {"model": primary.model, "reason": primary_error}
         )
 
-    selected_tasks = _select_tasks(load_tasks(tasks_path), split)
+    selected_tasks = _select_tasks(tasks, split)
     if not selected_tasks:
         raise ValueError(f"No tasks selected for split '{split}'.")
     output_path.parent.mkdir(parents=True, exist_ok=True)
     experiment_id = uuid.uuid4().hex
-    with output_path.open("w", encoding="utf-8") as output_file:
+    randomizer = random.Random(random_seed)
+    schedules: list[tuple[str, list[tuple[dict[str, Any], RecoveryStrategy]]]] = []
+    for repetition in range(1, repetitions + 1):
+        cases = [
+            (task, strategy)
+            for task in selected_tasks
+            for strategy in STRATEGIES
+        ]
+        randomizer.shuffle(cases)
+        schedules.append((f"rep-{repetition:03d}", cases))
+    execution_schedule = [
+        {
+            "repetition_id": repetition_id,
+            "execution_order": order,
+            "task_id": task["id"],
+            "strategy": strategy.value,
+        }
+        for repetition_id, cases in schedules
+        for order, (task, strategy) in enumerate(cases, start=1)
+    ]
+    git_root = Path(__file__).resolve().parents[1]
+    revision = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=git_root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        shell=False,
+    )
+    if revision.returncode != 0 or not revision.stdout.strip():
+        raise RuntimeError(f"Could not determine Git commit hash: {revision.stderr.strip()}")
+    git_status = subprocess.run(
+        ["git", "status", "--porcelain", "--untracked-files=normal"],
+        cwd=git_root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        shell=False,
+    )
+    if git_status.returncode != 0:
+        raise RuntimeError(f"Could not determine Git worktree status: {git_status.stderr.strip()}")
+    max_actions_per_attempt = config.get("max_actions_per_attempt", 8)
+    max_prompt_chars = config.get("max_prompt_chars", 24_000)
+    CodingAgentConfig(
+        budgets=limits,
+        max_actions_per_attempt=max_actions_per_attempt,
+        max_prompt_chars=max_prompt_chars,
+    )
+    with output_path.open("x", encoding="utf-8") as output_file:
         metadata = {
             "record_type": "run_metadata",
             "experiment_id": experiment_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "dataset": str(tasks_path),
+            "dataset_path": str(tasks_path),
+            "dataset_sha256": hashlib.sha256(dataset_bytes).hexdigest(),
+            "config_path": str(config_path),
+            "config_sha256": hashlib.sha256(config_bytes).hexdigest(),
+            "git_commit_hash": revision.stdout.strip(),
+            "git_worktree_clean": not bool(git_status.stdout.strip()),
             "split": split,
             "task_count": len(selected_tasks),
+            "repetitions": repetitions,
+            "random_seed": random_seed,
+            "random_seed_scope": "task/strategy execution order; not the model runtime",
+            "randomized_execution_order": execution_schedule,
             "strategies": [strategy.value for strategy in STRATEGIES],
             "hardware": hardware,
             "primary_model": primary.model,
@@ -318,6 +409,8 @@ async def run(
             "device_selected": None,
             "device_selection_note": "The local model server does not report the effective device.",
             "budgets": asdict(limits),
+            "max_actions_per_attempt": max_actions_per_attempt,
+            "max_prompt_chars": max_prompt_chars,
             "model_skips": skipped_optional,
         }
         output_file.write(json.dumps(metadata) + "\n")
@@ -353,11 +446,20 @@ async def run(
                     )
                     + "\n"
                 )
-            for task in selected_tasks:
-                for strategy in STRATEGIES:
+            for repetition_id, cases in schedules:
+                for execution_order, (task, strategy) in enumerate(cases, start=1):
                     row = await _run_case(
-                        task, model, strategy, limits, experiment_id
+                        task,
+                        model,
+                        strategy,
+                        limits,
+                        experiment_id,
+                        max_actions_per_attempt=max_actions_per_attempt,
+                        max_prompt_chars=max_prompt_chars,
                     )
+                    row["repetition_id"] = repetition_id
+                    row["execution_order"] = execution_order
+                    row["random_seed"] = random_seed
                     output_file.write(json.dumps(row, ensure_ascii=False) + "\n")
                     output_file.flush()
     if primary_error is not None:
@@ -370,9 +472,20 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=Path("results/latest.jsonl"))
     parser.add_argument("--config", type=Path, default=Path("configs/experiment.yaml"))
     parser.add_argument("--split", choices=("pilot", "held-out", "all"), default="pilot")
+    parser.add_argument("--repetitions", type=int, default=1)
+    parser.add_argument("--seed", type=int, default=DEFAULT_RANDOM_SEED)
     args = parser.parse_args()
     try:
-        asyncio.run(run(args.tasks, args.output, args.config, args.split))
+        asyncio.run(
+            run(
+                args.tasks,
+                args.output,
+                args.config,
+                args.split,
+                args.repetitions,
+                args.seed,
+            )
+        )
     except (LocalModelError, OSError, ValueError, RuntimeError) as exc:
         parser.exit(2, f"experiment: {type(exc).__name__}: {exc}\n")
 
