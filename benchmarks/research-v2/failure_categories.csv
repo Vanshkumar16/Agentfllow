@@ -1,0 +1,5 @@
+failure_category,count
+repeated_identical_failure,2
+syntax_error,1
+test_assertion_failure,6
+truncated_response,16

@@ -69,6 +69,13 @@ the dataset/configuration hashes and agent/protocol revision are frozen. Keep
 the JSONL files unchanged; report missing observations and do not claim
 strategy superiority without adequate paired evidence.
 
+The reproducibility package and pilot-only tables/figures are in
+[`research-v2/`](research-v2/README.md). Generate those artifacts from a raw run
+with `python experiments/prepare_research_artifacts.py --results <jsonl>`.
+The generator verifies dataset/configuration hashes and refuses to replace
+existing outputs unless `--force` is provided. Pilot artifacts are not a
+substitute for the held-out results.
+
 ## Frozen final evaluation
 
 After freezing the agent implementation in a clean Git commit, run the

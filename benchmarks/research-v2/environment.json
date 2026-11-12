@@ -1,0 +1,53 @@
+{
+  "artifact_preparation_versions": {
+    "note": "Package and Ollama versions were queried during artifact preparation; the pilot log did not record those runtime versions.",
+    "ollama_cli": "ollama version is 0.40.13",
+    "pytest": "9.1.1",
+    "python": "3.12.10",
+    "pyyaml": "6.0.3"
+  },
+  "artifact_prepared_at": "2026-11-12T02:46:47.620397+00:00",
+  "pilot_runtime": {
+    "budgets": {
+      "command_timeout_seconds": 30,
+      "max_model_calls": 16,
+      "max_output_tokens_per_call": 1024,
+      "max_repair_attempts": 3,
+      "max_test_runs": 4,
+      "max_tokens": 8192,
+      "max_tool_calls": 24,
+      "min_repair_seconds": 10,
+      "min_repair_tokens": 256,
+      "model_timeout_seconds": 60,
+      "task_timeout_seconds": 120
+    },
+    "device_requested": "auto",
+    "device_selected": null,
+    "device_selection_note": "The local model server does not report the effective device.",
+    "gpus": [
+      {
+        "free_vram_mib": 2563,
+        "name": "NVIDIA GeForce RTX 3050 6GB Laptop GPU",
+        "total_vram_mib": 6144
+      }
+    ],
+    "model": "gemma4:e2b",
+    "model_status": "available",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "processor": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+    "python": "3.12.10"
+  },
+  "reproducibility": {
+    "config_sha256": "2008d3eb447ee98b9212078c6cadd4f5b8e1064f13fda853cc73dc55802620c9",
+    "dataset_sha256": "dece185db26d52aadce87df77a9b3726dc529c4f0b16a543f455c112160b1a39",
+    "experiment_id": "7dc853f193e746cfbb509ccafac64c49",
+    "git_commit_hash": "bd01c0047d2736bd158311d92cdeb4ddb736624c",
+    "git_worktree_clean": true,
+    "random_seed": 20261112,
+    "random_seed_scope": "task/strategy execution order; not the model runtime",
+    "raw_log_sha256": "095b0dbf1bfb5aa63f7d3ff64aea35265d7b7044bc4a2ec33dc16511df116c7b",
+    "repetitions": 1,
+    "split": "pilot",
+    "task_count": 5
+  }
+}

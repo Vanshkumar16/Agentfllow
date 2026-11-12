@@ -1,0 +1,16 @@
+model,strategy_a,strategy_b,task_id,matched_repetitions,strict_resolution_mean_a_minus_b,final_test_passed_mean_a_minus_b,repair_attempts_mean_a_minus_b,latency_seconds_mean_a_minus_b,tokens_used_mean_a_minus_b
+gemma4:e2b,single-shot,fixed-retry,v2-001,1,0.0,0.0,-2.0,-33.859,-5867.0
+gemma4:e2b,single-shot,fixed-retry,v2-002,1,0.0,0.0,-2.0,-34.498999999999995,-6000.0
+gemma4:e2b,single-shot,fixed-retry,v2-003,1,0.0,0.0,-2.0,-35.625,-6079.0
+gemma4:e2b,single-shot,fixed-retry,v2-004,1,-1.0,-1.0,0.0,-14.328999999999999,-2377.0
+gemma4:e2b,single-shot,fixed-retry,v2-005,1,0.0,0.0,-2.0,-36.047999999999995,-5675.0
+gemma4:e2b,single-shot,failure-guided,v2-001,1,0.0,0.0,-1.0,-30.109,-5843.0
+gemma4:e2b,single-shot,failure-guided,v2-002,1,0.0,0.0,-1.0,-20.296000000000003,-4584.0
+gemma4:e2b,single-shot,failure-guided,v2-003,1,0.0,0.0,-1.0,-25.297,-4898.0
+gemma4:e2b,single-shot,failure-guided,v2-004,1,-1.0,-1.0,0.0,-12.094,-2118.0
+gemma4:e2b,single-shot,failure-guided,v2-005,1,0.0,0.0,-1.0,-29.125,-5888.0
+gemma4:e2b,fixed-retry,failure-guided,v2-001,1,0.0,0.0,1.0,3.75,24.0
+gemma4:e2b,fixed-retry,failure-guided,v2-002,1,0.0,0.0,1.0,14.202999999999996,1416.0
+gemma4:e2b,fixed-retry,failure-guided,v2-003,1,0.0,0.0,1.0,10.327999999999996,1181.0
+gemma4:e2b,fixed-retry,failure-guided,v2-004,1,0.0,0.0,0.0,2.2349999999999994,259.0
+gemma4:e2b,fixed-retry,failure-guided,v2-005,1,0.0,0.0,1.0,6.922999999999995,-213.0
