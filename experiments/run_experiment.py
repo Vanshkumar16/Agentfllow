@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import json
 import math
+import os
 import platform
 import random
 import re
@@ -18,10 +19,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from agentflow.budget import BudgetLimits
 from agentflow.coding_agent import CodingAgent, CodingAgentConfig, RecoveryStrategy
-from agentflow.local_model import LocalModelError, OllamaModel
+from agentflow.local_model import (
+    GENERATION_TEMPERATURE,
+    LocalModelError,
+    OllamaModel,
+)
 from agentflow.workspace import WorkspaceTools
 
 STRATEGIES = (
@@ -30,6 +37,15 @@ STRATEGIES = (
     RecoveryStrategy.FAILURE_GUIDED,
 )
 DEFAULT_RANDOM_SEED = 20261112
+V2_DATASET_SHA256 = "dece185db26d52aadce87df77a9b3726dc529c4f0b16a543f455c112160b1a39"
+V2_CONFIG_SHA256 = "2008d3eb447ee98b9212078c6cadd4f5b8e1064f13fda853cc73dc55802620c9"
+V2_HELDOUT_SEED = 20261113
+V2_HELDOUT_REPETITIONS = 3
+
+
+class _NoRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
 
 
 def load_tasks(path: Path, *, content: bytes | None = None) -> list[dict[str, Any]]:
@@ -74,7 +90,7 @@ def get_hardware_info() -> dict[str, Any]:
         completed = subprocess.run(
             [
                 "nvidia-smi",
-                "--query-gpu=name,memory.total,memory.free",
+                "--query-gpu=name,memory.total,memory.free,driver_version",
                 "--format=csv,noheader,nounits",
             ],
             capture_output=True,
@@ -92,7 +108,7 @@ def get_hardware_info() -> dict[str, Any]:
     info["nvidia_smi_available"] = True
     for line in completed.stdout.splitlines():
         parts = [part.strip() for part in line.split(",")]
-        if len(parts) != 3:
+        if len(parts) != 4:
             continue
         try:
             total_mib, free_mib = int(parts[1]), int(parts[2])
@@ -103,9 +119,92 @@ def get_hardware_info() -> dict[str, Any]:
                 "name": parts[0],
                 "total_vram_mib": total_mib,
                 "free_vram_mib": free_mib,
+                "driver_version": parts[3],
             }
         )
     return info
+
+
+def _ollama_server_version(base_url: str) -> str | None:
+    from urllib.request import ProxyHandler, build_opener
+
+    try:
+        opener = build_opener(ProxyHandler({}))
+        with opener.open(
+            f"{base_url.rstrip('/')}/api/version", timeout=5
+        ) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (OSError, TimeoutError, json.JSONDecodeError):
+        return None
+    version = payload.get("version") if isinstance(payload, dict) else None
+    return version if isinstance(version, str) else None
+
+
+def _query_model_inventory(base_url: str) -> dict[str, dict[str, object]]:
+    request = Request(f"{base_url.rstrip('/')}/api/tags", method="GET")
+    opener = build_opener(ProxyHandler({}), _NoRedirectHandler())
+    try:
+        with opener.open(request, timeout=5) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+        raise LocalModelError(
+            f"Could not query local model inventory at {base_url}: {exc}"
+        ) from exc
+    if not isinstance(payload, dict) or not isinstance(payload.get("models"), list):
+        raise LocalModelError("Local model server returned an invalid model inventory.")
+
+    inventory: dict[str, dict[str, object]] = {}
+    for model in payload["models"]:
+        if not isinstance(model, dict) or not isinstance(model.get("name"), str):
+            continue
+        details = model.get("details")
+        record: dict[str, object] = {
+            "details": details if isinstance(details, dict) else {}
+        }
+        for field in ("digest", "modified_at", "size"):
+            value = model.get(field)
+            if isinstance(value, (str, int)) and not isinstance(value, bool):
+                record[field] = value
+        inventory[model["name"]] = record
+    return inventory
+
+
+def _ollama_process_snapshot() -> str | None:
+    try:
+        completed = subprocess.run(
+            ["ollama", "ps"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            shell=False,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip()
+
+
+def _ollama_cli_version() -> str | None:
+    try:
+        completed = subprocess.run(
+            ["ollama", "--version"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            shell=False,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip() or completed.stderr.strip() or None
 
 
 def _write_task_files(root: Path, files: dict[str, str]) -> None:
@@ -222,12 +321,17 @@ def _optional_model_skips(
         ):
             skipped.append({"model": name, "reason": "runtime metadata does not identify a Gemma 4 model"})
             continue
+        if isinstance(minimum_free, bool) or not isinstance(
+            minimum_free, (int, float, str)
+        ):
+            skipped.append(
+                {"model": name, "reason": "minimum_free_vram_gb is missing or invalid"}
+            )
+            continue
         try:
-            if isinstance(minimum_free, bool):
-                raise ValueError("minimum_free_vram_gb cannot be a boolean")
             minimum_gb = float(minimum_free)
             required_mib = int(minimum_gb * 1024)
-        except (TypeError, ValueError, OverflowError):
+        except (ValueError, OverflowError):
             skipped.append({"model": name, "reason": "minimum_free_vram_gb is missing or invalid"})
             continue
         if not math.isfinite(minimum_gb) or minimum_gb <= 0:
@@ -246,6 +350,27 @@ def _optional_model_skips(
     return runnable, skipped
 
 
+def _validate_v2_heldout_protocol(
+    *,
+    dataset_sha256: str,
+    config_sha256: str,
+    split: str,
+    repetitions: int,
+    random_seed: int,
+    primary_model: str,
+) -> None:
+    if split != "held-out" or dataset_sha256 != V2_DATASET_SHA256:
+        return
+    if config_sha256 != V2_CONFIG_SHA256:
+        raise ValueError("The frozen v2 held-out dataset requires its frozen config.")
+    if repetitions != V2_HELDOUT_REPETITIONS:
+        raise ValueError("The frozen v2 held-out evaluation requires 3 repetitions.")
+    if random_seed != V2_HELDOUT_SEED:
+        raise ValueError("The frozen v2 held-out evaluation requires seed 20261113.")
+    if primary_model != "gemma4:e2b":
+        raise ValueError("The frozen v2 held-out evaluation requires gemma4:e2b.")
+
+
 async def run(
     tasks_path: Path,
     output_path: Path,
@@ -260,9 +385,14 @@ async def run(
         raise ValueError("repetitions must be a positive integer.")
     if not isinstance(random_seed, int) or isinstance(random_seed, bool):
         raise ValueError("random_seed must be an integer.")
+    partial_path = output_path.with_name(f"{output_path.name}.partial")
     if output_path.exists():
         raise FileExistsError(
             f"Refusing to overwrite experiment results: {output_path}"
+        )
+    if partial_path.exists():
+        raise FileExistsError(
+            f"An incomplete experiment file already exists: {partial_path}"
         )
 
     try:
@@ -288,17 +418,46 @@ async def run(
     device = str(model_config.get("device", "auto"))
     base_url = str(model_config.get("base_url", "http://localhost:11434"))
     primary = OllamaModel(str(model_config.get("name", "gemma4:e2b")), base_url, device)
+    dataset_sha256 = hashlib.sha256(dataset_bytes).hexdigest()
+    config_sha256 = hashlib.sha256(config_bytes).hexdigest()
+    _validate_v2_heldout_protocol(
+        dataset_sha256=dataset_sha256,
+        config_sha256=config_sha256,
+        split=split,
+        repetitions=repetitions,
+        random_seed=random_seed,
+        primary_model=primary.model,
+    )
+    frozen_v2_heldout = (
+        split == "held-out" and dataset_sha256 == V2_DATASET_SHA256
+    )
     primary_error: str | None = None
     try:
-        installed_models = await primary.list_model_details()
+        model_inventory = await asyncio.to_thread(
+            _query_model_inventory, base_url
+        )
     except LocalModelError as exc:
-        installed_models = {}
+        model_inventory = {}
         primary_error = str(exc)
+    installed_models: dict[str, dict[str, object]] = {}
+    for name, item in model_inventory.items():
+        details = item.get("details")
+        if isinstance(details, dict):
+            installed_models[name] = details
     if primary_error is None and primary.model not in installed_models:
         primary_error = (
             f"Primary model '{primary.model}' is not installed at {base_url}. "
             f"Available models: {', '.join(installed_models) or '(none)'}. "
             "No model was downloaded."
+        )
+    ollama_server_version = _ollama_server_version(base_url)
+    ollama_cli_version = _ollama_cli_version()
+    if frozen_v2_heldout and (
+        not ollama_server_version or not ollama_cli_version
+    ):
+        raise RuntimeError(
+            "The frozen v2 held-out evaluation requires recorded Ollama server "
+            "and CLI versions."
         )
     hardware = get_hardware_info()
     candidates = config.get("optional_e4b_models", [])
@@ -376,6 +535,14 @@ async def run(
     )
     if git_status.returncode != 0:
         raise RuntimeError(f"Could not determine Git worktree status: {git_status.stderr.strip()}")
+    if (
+        split == "held-out"
+        and dataset_sha256 == V2_DATASET_SHA256
+        and git_status.stdout.strip()
+    ):
+        raise RuntimeError(
+            "The frozen v2 held-out evaluation requires a clean Git worktree."
+        )
     max_actions_per_attempt = config.get("max_actions_per_attempt", 8)
     max_prompt_chars = config.get("max_prompt_chars", 24_000)
     CodingAgentConfig(
@@ -383,16 +550,17 @@ async def run(
         max_actions_per_attempt=max_actions_per_attempt,
         max_prompt_chars=max_prompt_chars,
     )
-    with output_path.open("x", encoding="utf-8") as output_file:
+    with partial_path.open("x", encoding="utf-8") as output_file:
         metadata = {
             "record_type": "run_metadata",
             "experiment_id": experiment_id,
             "created_at": datetime.now(timezone.utc).isoformat(),
+            "completion_status": "running",
             "dataset": str(tasks_path),
             "dataset_path": str(tasks_path),
-            "dataset_sha256": hashlib.sha256(dataset_bytes).hexdigest(),
+            "dataset_sha256": dataset_sha256,
             "config_path": str(config_path),
-            "config_sha256": hashlib.sha256(config_bytes).hexdigest(),
+            "config_sha256": config_sha256,
             "git_commit_hash": revision.stdout.strip(),
             "git_worktree_clean": not bool(git_status.stdout.strip()),
             "split": split,
@@ -404,10 +572,17 @@ async def run(
             "strategies": [strategy.value for strategy in STRATEGIES],
             "hardware": hardware,
             "primary_model": primary.model,
+            "model_inventory": model_inventory,
+            "ollama_server_version": ollama_server_version,
+            "ollama_cli_version": ollama_cli_version,
+            "temperature": GENERATION_TEMPERATURE,
             "primary_model_status": "available" if primary_error is None else "unavailable",
             "device_requested": device,
             "device_selected": None,
-            "device_selection_note": "The local model server does not report the effective device.",
+            "device_selection_note": (
+                "Effective device is not exposed as a dedicated API field; "
+                "Ollama process-list observations are recorded separately."
+            ),
             "budgets": asdict(limits),
             "max_actions_per_attempt": max_actions_per_attempt,
             "max_prompt_chars": max_prompt_chars,
@@ -417,6 +592,23 @@ async def run(
         for item in skipped_optional:
             output_file.write(json.dumps({"record_type": "model_skipped", **item}) + "\n")
         output_file.flush()
+        output_file.write(
+            json.dumps(
+                {
+                    "record_type": "runtime_observation",
+                    "observed_at": datetime.now(timezone.utc).isoformat(),
+                    "phase": "before_execution",
+                    "ollama_processes": _ollama_process_snapshot(),
+                }
+            )
+            + "\n"
+        )
+        output_file.flush()
+        os.fsync(output_file.fileno())
+        result_count = 0
+        observed_cases: set[tuple[str, str, int]] = set()
+        executed_models: list[str] = []
+        first_case_observed = False
         for model, optional_candidate in model_runs:
             if optional_candidate is not None:
                 current_hardware = get_hardware_info()
@@ -446,6 +638,7 @@ async def run(
                     )
                     + "\n"
                 )
+            executed_models.append(model.model)
             for repetition_id, cases in schedules:
                 for execution_order, (task, strategy) in enumerate(cases, start=1):
                     row = await _run_case(
@@ -460,10 +653,96 @@ async def run(
                     row["repetition_id"] = repetition_id
                     row["execution_order"] = execution_order
                     row["random_seed"] = random_seed
+                    row.setdefault("model", model.model)
+                    if row.get("record_type") != "result":
+                        raise RuntimeError("The case runner did not return a result record.")
+                    if row.get("experiment_id") != experiment_id:
+                        raise RuntimeError(
+                            "Result experiment_id does not match the active experiment."
+                        )
+                    if row.get("model") != model.model:
+                        raise RuntimeError(
+                            "Result model does not match the active model."
+                        )
+                    expected_case = (model.model, repetition_id, execution_order)
+                    if expected_case in observed_cases:
+                        raise RuntimeError(
+                            f"Duplicate scheduled case encountered: {expected_case}."
+                        )
+                    expected_schedule_row = execution_schedule[
+                        (int(repetition_id.split("-")[1]) - 1) * len(cases)
+                        + execution_order
+                        - 1
+                    ]
+                    if (
+                        row.get("task_id") != expected_schedule_row["task_id"]
+                        or row.get("strategy") != expected_schedule_row["strategy"]
+                    ):
+                        raise RuntimeError(
+                            "Result identity does not match the randomized execution schedule."
+                        )
+                    observed_cases.add(expected_case)
                     output_file.write(json.dumps(row, ensure_ascii=False) + "\n")
                     output_file.flush()
+                    result_count += 1
+                    if not first_case_observed:
+                        output_file.write(
+                            json.dumps(
+                                {
+                                    "record_type": "runtime_observation",
+                                    "observed_at": datetime.now(
+                                        timezone.utc
+                                    ).isoformat(),
+                                    "phase": "after_first_case",
+                                    "ollama_processes": _ollama_process_snapshot(),
+                                }
+                            )
+                            + "\n"
+                        )
+                        output_file.flush()
+                        first_case_observed = True
+        if primary_error is not None:
+            raise LocalModelError(primary_error)
+        expected_result_count = len(execution_schedule) * len(executed_models)
+        if result_count != expected_result_count:
+            raise RuntimeError(
+                f"Expected {expected_result_count} results, recorded {result_count}."
+            )
+        output_file.write(
+            json.dumps(
+                {
+                    "record_type": "runtime_observation",
+                    "observed_at": datetime.now(timezone.utc).isoformat(),
+                    "phase": "after_execution",
+                    "ollama_processes": _ollama_process_snapshot(),
+                }
+            )
+            + "\n"
+        )
+        output_file.write(
+            json.dumps(
+                {
+                    "record_type": "evaluation_complete",
+                    "experiment_id": experiment_id,
+                    "completed_at": datetime.now(timezone.utc).isoformat(),
+                    "status": "complete",
+                    "result_count": result_count,
+                    "expected_result_count": expected_result_count,
+                    "scheduled_case_count_per_model": len(execution_schedule),
+                    "completed_models": executed_models,
+                    "repetitions": repetitions,
+                    "task_count": len(selected_tasks),
+                    "strategies": [strategy.value for strategy in STRATEGIES],
+                    "random_seed": random_seed,
+                }
+            )
+            + "\n"
+        )
+        output_file.flush()
+        os.fsync(output_file.fileno())
     if primary_error is not None:
         raise LocalModelError(primary_error)
+    partial_path.rename(output_path)
 
 
 def main() -> None:

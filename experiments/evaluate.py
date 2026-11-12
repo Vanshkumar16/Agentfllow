@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import random
 import statistics
 from collections import Counter
 from itertools import combinations
@@ -22,7 +23,27 @@ PAIRED_METRICS = (
 )
 
 
-def evaluate(path: Path) -> dict[str, Any]:
+DEFAULT_BOOTSTRAP_SAMPLES = 10_000
+DEFAULT_BOOTSTRAP_SEED = 20261113
+
+
+def evaluate(
+    path: Path,
+    *,
+    bootstrap_samples: int = DEFAULT_BOOTSTRAP_SAMPLES,
+    bootstrap_seed: int = DEFAULT_BOOTSTRAP_SEED,
+) -> dict[str, Any]:
+    if (
+        not isinstance(bootstrap_samples, int)
+        or isinstance(bootstrap_samples, bool)
+        or bootstrap_samples < DEFAULT_BOOTSTRAP_SAMPLES
+    ):
+        raise ValueError(
+            f"bootstrap_samples must be at least {DEFAULT_BOOTSTRAP_SAMPLES}."
+        )
+    if not isinstance(bootstrap_seed, int) or isinstance(bootstrap_seed, bool):
+        raise ValueError("bootstrap_seed must be an integer.")
+
     rows: list[dict[str, Any]] = []
     metadata: list[dict[str, Any]] = []
     observations: list[dict[str, Any]] = []
@@ -53,9 +74,17 @@ def evaluate(path: Path) -> dict[str, Any]:
                         f"Result line {line_number} has unknown record_type '{kind}'."
                     )
 
+    seen_observations: set[tuple[str, str, str, str]] = set()
     groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for row in rows:
         key = (str(row.get("model", "unknown")), str(row.get("strategy", "unknown")))
+        observation_key = (*key, _task_id(row), _repetition_id(row))
+        if observation_key in seen_observations:
+            raise ValueError(
+                "Duplicate result observation for model, strategy, task, and "
+                f"repetition: {observation_key}."
+            )
+        seen_observations.add(observation_key)
         groups.setdefault(key, []).append(row)
 
     summaries = []
@@ -249,7 +278,12 @@ def evaluate(path: Path) -> dict[str, Any]:
         )
     return {
         "runs": summaries,
-        "paired_comparisons": _paired_comparisons(rows),
+        "paired_comparisons": _paired_comparisons(
+            rows, bootstrap_samples, bootstrap_seed
+        ),
+        "statistical_analysis": _task_clustered_statistics(
+            rows, bootstrap_samples, bootstrap_seed
+        ),
         "metadata": metadata,
         "runtime_observations": observations,
         "completions": completions,
@@ -491,7 +525,126 @@ def _summarize_tasks(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return summaries
 
 
-def _paired_comparisons(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _row_metric(row: dict[str, Any], metric: str) -> float | None:
+    if metric == "strict_resolution":
+        return float(row.get("resolved") is True)
+    if metric == "final_test_passed":
+        return float(_final_test_passed(row))
+    if metric == "repair_attempts":
+        value = _repair_attempts(row)
+        return float(value) if value is not None else None
+    if metric == "latency_seconds":
+        return _latency(row)
+    if metric == "tokens_used":
+        value = _tokens_used(row)
+        return float(value) if value is not None else None
+    raise ValueError(f"Unknown paired metric '{metric}'.")
+
+
+def _percentile(sorted_values: list[float], percentile: float) -> float:
+    position = (len(sorted_values) - 1) * percentile
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return sorted_values[lower]
+    fraction = position - lower
+    return sorted_values[lower] * (1 - fraction) + sorted_values[upper] * fraction
+
+
+def _bootstrap_task_summary(
+    task_values: dict[str, float],
+    bootstrap_samples: int,
+    bootstrap_seed: int,
+) -> dict[str, Any]:
+    values = [task_values[task_id] for task_id in sorted(task_values)]
+    mean = _mean(values)
+    standard_deviation = statistics.stdev(values) if len(values) > 1 else None
+    if len(values) < 2:
+        interval = None
+    else:
+        generator = random.Random(bootstrap_seed)
+        bootstrap_means = [
+            sum(values[generator.randrange(len(values))] for _ in values) / len(values)
+            for _ in range(bootstrap_samples)
+        ]
+        bootstrap_means.sort()
+        interval = {
+            "lower": _percentile(bootstrap_means, 0.025),
+            "upper": _percentile(bootstrap_means, 0.975),
+        }
+    return {
+        "n_tasks": len(values),
+        "mean": mean,
+        "standard_deviation": standard_deviation,
+        "confidence_interval_95": interval,
+    }
+
+
+def _task_clustered_statistics(
+    rows: list[dict[str, Any]],
+    bootstrap_samples: int,
+    bootstrap_seed: int,
+) -> dict[str, Any]:
+    grouped: dict[str, dict[str, dict[str, list[dict[str, Any]]]]] = {}
+    for row in rows:
+        model = str(row.get("model", "unknown"))
+        strategy = str(row.get("strategy", "unknown"))
+        grouped.setdefault(model, {}).setdefault(strategy, {}).setdefault(
+            _task_id(row), []
+        ).append(row)
+
+    strategy_estimates: list[dict[str, Any]] = []
+    metric_seed_index = 0
+    for model, strategies in sorted(grouped.items()):
+        for strategy, tasks in sorted(strategies.items()):
+            metrics: dict[str, Any] = {}
+            for metric in PAIRED_METRICS:
+                task_values: dict[str, float] = {}
+                missing_tasks = 0
+                for task_id, task_rows in tasks.items():
+                    values = [
+                        value
+                        for row in task_rows
+                        if (value := _row_metric(row, metric)) is not None
+                    ]
+                    if values:
+                        task_values[task_id] = sum(values) / len(values)
+                    else:
+                        missing_tasks += 1
+                metrics[metric] = {
+                    **_bootstrap_task_summary(
+                        task_values,
+                        bootstrap_samples,
+                        bootstrap_seed + metric_seed_index,
+                    ),
+                    "missing_tasks": missing_tasks,
+                }
+                metric_seed_index += 1
+            strategy_estimates.append(
+                {
+                    "model": model,
+                    "strategy": strategy,
+                    "metrics": metrics,
+                }
+            )
+    return {
+        "method": "task-clustered percentile bootstrap; repetitions remain within tasks",
+        "paired_method": (
+            "match strategy observations by task and repetition; average repetitions "
+            "within task before bootstrapping tasks"
+        ),
+        "bootstrap_samples": bootstrap_samples,
+        "bootstrap_seed": bootstrap_seed,
+        "confidence_level": 0.95,
+        "strategy_estimates": strategy_estimates,
+    }
+
+
+def _paired_comparisons(
+    rows: list[dict[str, Any]],
+    bootstrap_samples: int,
+    bootstrap_seed: int,
+) -> list[dict[str, Any]]:
     models: dict[str, dict[str, list[dict[str, Any]]]] = {}
     for row in rows:
         model = str(row.get("model", "unknown"))
@@ -499,6 +652,7 @@ def _paired_comparisons(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         models.setdefault(model, {}).setdefault(strategy, []).append(row)
 
     comparisons: list[dict[str, Any]] = []
+    pair_seed_index = 0
     for model, strategies_by_name in sorted(models.items()):
         strategy_names = sorted(strategies_by_name)
         strategy_pairs = list(combinations(strategy_names, 2))
@@ -506,29 +660,32 @@ def _paired_comparisons(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if all(strategy in strategy_names for strategy in STRATEGIES):
             strategy_pairs = list(combinations(STRATEGIES, 2))
         for strategy_a, strategy_b in strategy_pairs:
-            by_key: dict[tuple[str, str], dict[str, list[dict[str, Any]]]] = {}
+            by_key: dict[tuple[str, str], dict[str, dict[str, dict[str, Any]]]] = {}
             for strategy, strategy_rows in (
                 (strategy_a, strategies_by_name[strategy_a]),
                 (strategy_b, strategies_by_name[strategy_b]),
             ):
                 for row in strategy_rows:
                     key = (_task_id(row), _repetition_id(row))
-                    by_key.setdefault(key, {}).setdefault(strategy, []).append(row)
-            task_pairs: dict[str, dict[str, list[tuple[dict[str, Any], dict[str, Any]]]]] = {}
-            for (task_id, _), strategy_rows in by_key.items():
-                rows_a = strategy_rows.get(strategy_a, [])
-                rows_b = strategy_rows.get(strategy_b, [])
-                for row_a, row_b in zip(rows_a, rows_b):
-                    task_pairs.setdefault(task_id, {}).setdefault("pairs", []).append(
-                        (row_a, row_b)
-                    )
+                    by_key.setdefault(key, {}).setdefault(strategy, {})[
+                        _repetition_id(row)
+                    ] = row
+            task_pairs: dict[str, list[tuple[dict[str, Any], dict[str, Any]]]] = {}
+            for (task_id, repetition_id), strategy_rows in by_key.items():
+                row_a = strategy_rows.get(strategy_a, {}).get(repetition_id)
+                row_b = strategy_rows.get(strategy_b, {}).get(repetition_id)
+                if row_a is not None and row_b is not None:
+                    task_pairs.setdefault(task_id, []).append((row_a, row_b))
 
             per_task = []
             aggregate_differences: dict[str, list[float]] = {
                 metric: [] for metric in PAIRED_METRICS
             }
-            for task_id, pair_group in sorted(task_pairs.items()):
-                pairs = pair_group["pairs"]
+            favor_counts = {
+                metric: {"strategy_a": 0, "strategy_b": 0, "ties": 0}
+                for metric in PAIRED_METRICS
+            }
+            for task_id, pairs in sorted(task_pairs.items()):
                 differences: dict[str, list[float]] = {
                     metric: [] for metric in PAIRED_METRICS
                 }
@@ -541,7 +698,24 @@ def _paired_comparisons(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                                 metric_values_a[metric][0] - metric_values_b[metric][0]
                             )
                             differences[metric].append(difference)
-                            aggregate_differences[metric].append(difference)
+                task_means: dict[str, float | None] = {}
+                for metric, samples in differences.items():
+                    task_mean = _mean(samples)
+                    task_means[metric] = task_mean
+                    if task_mean is None:
+                        continue
+                    aggregate_differences[metric].append(task_mean)
+                    is_cost = metric in {
+                        "repair_attempts",
+                        "latency_seconds",
+                        "tokens_used",
+                    }
+                    if math.isclose(task_mean, 0.0, abs_tol=1e-12):
+                        favor_counts[metric]["ties"] += 1
+                    elif (task_mean < 0 if is_cost else task_mean > 0):
+                        favor_counts[metric]["strategy_a"] += 1
+                    else:
+                        favor_counts[metric]["strategy_b"] += 1
                 per_task.append(
                     {
                         "task_id": task_id,
@@ -552,20 +726,48 @@ def _paired_comparisons(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                         },
                     }
                 )
+            estimates = {}
+            for metric_index, metric in enumerate(PAIRED_METRICS):
+                estimates[metric] = {
+                    **_bootstrap_task_summary(
+                        {
+                            str(index): value
+                            for index, value in enumerate(
+                                aggregate_differences[metric]
+                            )
+                        },
+                        bootstrap_samples,
+                        bootstrap_seed
+                        + len(PAIRED_METRICS) * (pair_seed_index + 1)
+                        + metric_index,
+                    ),
+                    "matched_metric_task_count": len(
+                        aggregate_differences[metric]
+                    ),
+                    "missing_metric_task_count": (
+                        len(task_pairs) - len(aggregate_differences[metric])
+                    ),
+                    "difference_direction": "strategy_a minus strategy_b",
+                    "tasks_favoring_strategy_a": favor_counts[metric]["strategy_a"],
+                    "tasks_favoring_strategy_b": favor_counts[metric]["strategy_b"],
+                    "tasks_tied": favor_counts[metric]["ties"],
+                }
+            pair_seed_index += 1
             comparisons.append(
                 {
                     "model": model,
                     "strategy_a": strategy_a,
                     "strategy_b": strategy_b,
+                    "confidence_interval_method": (
+                        "task-clustered percentile bootstrap"
+                    ),
+                    "bootstrap_samples": bootstrap_samples,
                     "difference_direction": "strategy_a minus strategy_b",
                     "matched_task_count": len(per_task),
                     "matched_repetition_count": sum(
                         item["matched_repetitions"] for item in per_task
                     ),
-                    "mean_difference_across_paired_cases": {
-                        metric: _mean_confidence_interval(samples)
-                        for metric, samples in aggregate_differences.items()
-                    },
+                    "mean_difference_across_paired_cases": estimates,
                     "per_task": per_task,
                 }
             )
@@ -619,8 +821,26 @@ def _budget_violation_reasons(row: dict[str, Any]) -> list[str]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("results", nargs="?", type=Path, default=Path("results/latest.jsonl"))
+    parser.add_argument(
+        "--bootstrap-samples",
+        type=int,
+        default=DEFAULT_BOOTSTRAP_SAMPLES,
+        help=f"task-clustered bootstrap resamples (minimum {DEFAULT_BOOTSTRAP_SAMPLES})",
+    )
+    parser.add_argument(
+        "--bootstrap-seed", type=int, default=DEFAULT_BOOTSTRAP_SEED
+    )
     args = parser.parse_args()
-    print(json.dumps(evaluate(args.results), indent=2))
+    print(
+        json.dumps(
+            evaluate(
+                args.results,
+                bootstrap_samples=args.bootstrap_samples,
+                bootstrap_seed=args.bootstrap_seed,
+            ),
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

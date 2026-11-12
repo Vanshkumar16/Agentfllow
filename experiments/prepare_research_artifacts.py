@@ -134,6 +134,21 @@ def _validate_pilot_evidence(
     if len(results) != 15:
         raise ValueError(f"Expected exactly 15 result records, found {len(results)}.")
 
+    repetition_ids = {row.get("repetition_id") for row in results}
+    if (
+        len(repetition_ids) != 1
+        or None in repetition_ids
+        or metadata.get("repetitions") != 1
+    ):
+        raise ValueError(f"Expected exactly one repetition, found {repetition_ids}.")
+
+    observation_keys = [
+        (row.get("task_id"), row.get("strategy"), row.get("repetition_id"))
+        for row in results
+    ]
+    if len(observation_keys) != len(set(observation_keys)):
+        raise ValueError("Duplicate pilot observations detected.")
+
     strategies = {row.get("strategy") for row in results}
     if strategies != set(STRATEGIES):
         raise ValueError(f"Expected strategies {STRATEGIES}, found {sorted(strategies)}.")
@@ -168,25 +183,25 @@ def _validate_pilot_evidence(
             f"Duplicates: {duplicate_pairs}"
         )
 
-    repetition_ids = {row.get("repetition_id") for row in results}
-    if (
-        len(repetition_ids) != 1
-        or None in repetition_ids
-        or metadata.get("repetitions") != 1
-    ):
-        raise ValueError(f"Expected exactly one repetition, found {repetition_ids}.")
-
-    observation_keys = [
-        (row.get("task_id"), row.get("strategy"), row.get("repetition_id"))
-        for row in results
-    ]
-    if len(observation_keys) != len(set(observation_keys)):
-        raise ValueError("Duplicate pilot observations detected.")
-
-    allowed_types = {"run_metadata", "result"}
+    allowed_types = {
+        "run_metadata",
+        "result",
+        "runtime_observation",
+        "evaluation_complete",
+    }
     unexpected_types = {row.get("record_type") for row in raw_rows} - allowed_types
     if unexpected_types:
         raise ValueError(f"Unexpected JSONL record types: {unexpected_types}")
+    completions = [
+        row for row in raw_rows if row.get("record_type") == "evaluation_complete"
+    ]
+    if completions and (
+        len(completions) != 1
+        or completions[0].get("status") != "complete"
+        or completions[0].get("result_count") != 15
+        or completions[0].get("expected_result_count") != 15
+    ):
+        raise ValueError("Pilot completion record does not confirm all 15 results.")
     if metadata.get("task_count") != 5:
         raise ValueError("Metadata task_count must equal 5.")
 
