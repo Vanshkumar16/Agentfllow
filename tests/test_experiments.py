@@ -382,6 +382,51 @@ def test_evaluator_reports_resolution_attempts_latency_and_tokens(tmp_path):
     assert summary["measured_model_usage_calls"] == 1
 
 
+def test_evaluator_excludes_budget_rejected_model_calls_from_usage_coverage(tmp_path):
+    results_file = tmp_path / "rejected-model-calls.jsonl"
+    row = {
+        "record_type": "result",
+        "task_id": "t1",
+        "model": "local-model",
+        "strategy": "failure-guided",
+        "resolved": False,
+        "budget": {
+            "model_calls": 1,
+            "budget_events": [
+                {
+                    "event": "budget_rejected",
+                    "budget_kind": "tokens",
+                    "reason": "estimated prompt leaves no token budget for model output",
+                }
+            ],
+        },
+        "per_call_logs": [
+            {
+                "call_type": "model",
+                "status": "completed",
+                "token_accounting": {"usage_status": "measured"},
+            },
+            {
+                "call_type": "model",
+                "status": "budget_rejected",
+                "validation_outcome": "not_called",
+            },
+        ],
+    }
+    results_file.write_text(json.dumps(row) + "\n", encoding="utf-8")
+
+    summary = evaluate(results_file)["runs"][0]
+    token_usage = summary["token_usage"]
+
+    assert token_usage["model_calls_logged"] == 2
+    assert token_usage["provider_call_attempts"] == 1
+    assert token_usage["budget_rejected_model_call_attempts"] == 1
+    assert token_usage["missing_model_usage_calls"] == 0
+    assert token_usage["reported_usage_call_coverage"] == 1.0
+    assert token_usage["fully_measured_usage_call_coverage"] == 1.0
+    assert summary["budget_rejection_events"] == 1
+
+
 def test_evaluator_reports_token_budget_violations(tmp_path):
     results_file = tmp_path / "violations.jsonl"
     rows = [

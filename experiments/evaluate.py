@@ -118,9 +118,17 @@ def evaluate(path: Path) -> dict[str, Any]:
         model_call_logs = [
             call for call in call_logs if call.get("call_type") == "model"
         ]
+        budget_rejected_model_call_attempts = sum(
+            call.get("status") == "budget_rejected" for call in model_call_logs
+        )
+        provider_call_logs = [
+            call
+            for call in model_call_logs
+            if call.get("status") != "budget_rejected"
+        ]
         usage_statuses = Counter(
             accounting.get("usage_status")
-            for call in model_call_logs
+            for call in provider_call_logs
             if isinstance((accounting := call.get("token_accounting")), dict)
         )
         missing_usage_calls = sum(
@@ -130,22 +138,30 @@ def evaluate(path: Path) -> dict[str, Any]:
                 "partial",
                 "unavailable",
             }
-            for call in model_call_logs
+            for call in provider_call_logs
         )
         model_calls_from_budgets = sum(
             _int_metric(row, "model_calls") or 0 for row in group
         )
-        unlogged_model_calls = max(0, model_calls_from_budgets - len(model_call_logs))
+        unlogged_model_calls = max(
+            0, model_calls_from_budgets - len(provider_call_logs)
+        )
         missing_model_usage_calls = (
             usage_statuses.get("unavailable", 0)
             + missing_usage_calls
             + unlogged_model_calls
         )
-        usage_call_denominator = max(model_calls_from_budgets, len(model_call_logs))
+        usage_call_denominator = max(
+            model_calls_from_budgets, len(provider_call_logs)
+        )
         repetition_summaries = _summarize_repetitions(group)
         task_summaries = _summarize_tasks(group)
         token_usage = {
             "model_calls_logged": len(model_call_logs),
+            "provider_call_attempts": len(provider_call_logs),
+            "budget_rejected_model_call_attempts": (
+                budget_rejected_model_call_attempts
+            ),
             "model_calls_from_budgets": model_calls_from_budgets,
             "unlogged_model_calls": unlogged_model_calls,
             "measured_model_usage_calls": usage_statuses.get("measured", 0),
