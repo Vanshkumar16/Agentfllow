@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any
+from collections import Counter
 
 if __package__:
     from .evaluate import evaluate
@@ -115,6 +116,84 @@ def _svg_bar_chart(
     path.write_text("\n".join(elements) + "\n", encoding="utf-8")
 
 
+def _validate_pilot_evidence(
+    dataset_path: Path,
+    raw_rows: list[dict[str, Any]],
+    metadata: dict[str, Any],
+) -> list[dict[str, Any]]:
+    dataset_rows = _read_jsonl(dataset_path)
+    pilot_tasks = [task for task in dataset_rows if task.get("split") == "pilot"]
+    pilot_ids = [task.get("id") for task in pilot_tasks]
+    expected_task_ids = set(pilot_ids)
+    if len(pilot_ids) != 5 or len(expected_task_ids) != 5:
+        raise ValueError(
+            f"Expected exactly 5 unique pilot tasks, found {len(expected_task_ids)}."
+        )
+
+    results = [row for row in raw_rows if row.get("record_type") == "result"]
+    if len(results) != 15:
+        raise ValueError(f"Expected exactly 15 result records, found {len(results)}.")
+
+    strategies = {row.get("strategy") for row in results}
+    if strategies != set(STRATEGIES):
+        raise ValueError(f"Expected strategies {STRATEGIES}, found {sorted(strategies)}.")
+
+    actual_task_ids = {row.get("task_id") for row in results}
+    if actual_task_ids != expected_task_ids:
+        raise ValueError(
+            f"Task ID mismatch. Missing: {expected_task_ids - actual_task_ids}; "
+            f"Unexpected: {actual_task_ids - expected_task_ids}"
+        )
+
+    expected_pairs = {
+        (task_id, strategy)
+        for task_id in expected_task_ids
+        for strategy in STRATEGIES
+    }
+    actual_pair_counts = Counter(
+        (row.get("task_id"), row.get("strategy")) for row in results
+    )
+    missing_pairs = expected_pairs - set(actual_pair_counts)
+    unexpected_pairs = set(actual_pair_counts) - expected_pairs
+    duplicate_pairs = {
+        pair: count
+        for pair, count in actual_pair_counts.items()
+        if count != 1
+    }
+    if missing_pairs or unexpected_pairs or duplicate_pairs:
+        raise ValueError(
+            "Pilot task-strategy validation failed. "
+            f"Missing: {missing_pairs}; "
+            f"Unexpected: {unexpected_pairs}; "
+            f"Duplicates: {duplicate_pairs}"
+        )
+
+    repetition_ids = {row.get("repetition_id") for row in results}
+    if (
+        len(repetition_ids) != 1
+        or None in repetition_ids
+        or metadata.get("repetitions") != 1
+    ):
+        raise ValueError(f"Expected exactly one repetition, found {repetition_ids}.")
+
+    observation_keys = [
+        (row.get("task_id"), row.get("strategy"), row.get("repetition_id"))
+        for row in results
+    ]
+    if len(observation_keys) != len(set(observation_keys)):
+        raise ValueError("Duplicate pilot observations detected.")
+
+    allowed_types = {"run_metadata", "result"}
+    unexpected_types = {row.get("record_type") for row in raw_rows} - allowed_types
+    if unexpected_types:
+        raise ValueError(f"Unexpected JSONL record types: {unexpected_types}")
+    if metadata.get("task_count") != 5:
+        raise ValueError("Metadata task_count must equal 5.")
+
+    print("Pilot evidence validation passed: 15/15 observations.")
+    return results
+
+
 def prepare(raw_path: Path, output_dir: Path, *, force: bool = False) -> None:
     raw_path = raw_path.resolve()
     root = Path(__file__).resolve().parents[1]
@@ -153,10 +232,8 @@ def prepare(raw_path: Path, output_dir: Path, *, force: bool = False) -> None:
         raise ValueError("Raw log config hash does not match configs/experiment_v2.yaml.")
 
     report = evaluate(raw_path)
-    results = [row for row in raw_rows if row.get("record_type") == "result"]
-    strategies = {str(row.get("strategy")) for row in results}
-    if strategies != set(STRATEGIES):
-        raise ValueError(f"Pilot log must include all strategies, found {sorted(strategies)}.")
+
+    results = _validate_pilot_evidence(dataset_path, raw_rows, metadata)
 
     destination.mkdir(parents=True, exist_ok=True)
     (destination / "raw").mkdir(exist_ok=True)
@@ -230,6 +307,10 @@ def prepare(raw_path: Path, output_dir: Path, *, force: bool = False) -> None:
                 "mean_latency_seconds": row["mean_latency_seconds"],
                 "mean_tokens_used": row["mean_tokens_used"],
                 "model_calls_logged": row["model_calls_logged"],
+                "provider_call_attempts": row["token_usage"]["provider_call_attempts"],
+                "budget_rejected_model_call_attempts": row["token_usage"][
+                    "budget_rejected_model_call_attempts"
+                ],
                 "token_usage_coverage": row["token_usage"]["reported_usage_call_coverage"],
                 "missing_model_usage_calls": row["token_usage"]["missing_model_usage_calls"],
                 "budget_rejection_events": row["budget_rejection_events"],
@@ -287,7 +368,7 @@ def prepare(raw_path: Path, output_dir: Path, *, force: bool = False) -> None:
     result_table = "\n".join(
         "| {strategy} | {resolved}/{tasks} ({resolution:.0%}) | "
         "{passed}/{tasks} ({test_rate:.0%}) | {latency:.2f} | {tokens:.0f} | "
-        "{coverage:.1%} |".format(
+        "{coverage:.1%} | {rejected} |".format(
             strategy=row["strategy"],
             resolved=row["resolved"],
             tasks=row["tasks"],
@@ -297,6 +378,7 @@ def prepare(raw_path: Path, output_dir: Path, *, force: bool = False) -> None:
             latency=row["mean_latency_seconds"],
             tokens=row["mean_tokens_used"],
             coverage=row["token_usage_coverage"],
+            rejected=row["budget_rejected_model_call_attempts"],
         )
         for row in summary_rows
     )
@@ -384,7 +466,9 @@ controls case ordering, not model sampling. Device selection was requested as
   tool versions queried during artifact preparation are explicitly distinguished
   from versions embedded in the run log.
 - `summary.csv`: strategy-level rates, effort, usage coverage, failures, and
-  budget outcomes.
+  budget outcomes. Provider usage coverage excludes model-call records marked
+  `budget_rejected`; those attempts are counted separately from calls that
+  reached the provider but lack usage telemetry.
 - `task_metrics.csv`: per-task/per-strategy observations.
 - `paired_task_comparisons.csv`: per-task paired differences (`strategy_a -
   strategy_b`) for the metrics supported by the evaluator.
@@ -403,8 +487,13 @@ Ollama version at execution time were not recorded in the raw log. Five tasks
 and one repetition are only a protocol/logging pilot; confidence intervals or
 paired differences here are not a basis for a superiority claim.
 
-| Strategy | Strict resolution | Final tests passed | Mean latency (s) | Mean tokens | Usage coverage |
-|---|---:|---:|---:|---:|---:|
+The six token-budget-rejected model-call attempts were rejected before inference
+and are excluded from the provider-usage coverage denominator. They are reported
+in `summary.csv` as `budget_rejected_model_call_attempts`, separate from
+`missing_model_usage_calls`.
+
+| Strategy | Strict resolution | Final tests passed | Mean latency (s) | Mean tokens | Provider usage coverage | Budget-rejected attempts |
+|---|---:|---:|---:|---:|---:|---:|
 {result_table}
 
 The pilot outcome is descriptive only. The reported confidence intervals in

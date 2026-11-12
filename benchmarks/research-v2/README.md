@@ -48,7 +48,9 @@ controls case ordering, not model sampling. Device selection was requested as
   tool versions queried during artifact preparation are explicitly distinguished
   from versions embedded in the run log.
 - `summary.csv`: strategy-level rates, effort, usage coverage, failures, and
-  budget outcomes.
+  budget outcomes. Provider usage coverage excludes model-call records marked
+  `budget_rejected`; those attempts are counted separately from calls that
+  reached the provider but lack usage telemetry.
 - `task_metrics.csv`: per-task/per-strategy observations.
 - `paired_task_comparisons.csv`: per-task paired differences (`strategy_a -
   strategy_b`) for the metrics supported by the evaluator.
@@ -67,11 +69,16 @@ Ollama version at execution time were not recorded in the raw log. Five tasks
 and one repetition are only a protocol/logging pilot; confidence intervals or
 paired differences here are not a basis for a superiority claim.
 
-| Strategy | Strict resolution | Final tests passed | Mean latency (s) | Mean tokens | Usage coverage |
-|---|---:|---:|---:|---:|---:|
-| failure-guided | 1/5 (20%) | 1/5 (20%) | 35.28 | 6236 | 93.1% |
-| fixed-retry | 1/5 (20%) | 1/5 (20%) | 42.77 | 6770 | 88.9% |
-| single-shot | 0/5 (0%) | 0/5 (0%) | 11.90 | 1570 | 100.0% |
+The six token-budget-rejected model-call attempts were rejected before inference
+and are excluded from the provider-usage coverage denominator. They are reported
+in `summary.csv` as `budget_rejected_model_call_attempts`, separate from
+`missing_model_usage_calls`.
+
+| Strategy | Strict resolution | Final tests passed | Mean latency (s) | Mean tokens | Provider usage coverage | Budget-rejected attempts |
+|---|---:|---:|---:|---:|---:|---:|
+| failure-guided | 1/5 (20%) | 1/5 (20%) | 35.28 | 6236 | 100.0% | 2 |
+| fixed-retry | 1/5 (20%) | 1/5 (20%) | 42.77 | 6770 | 100.0% | 4 |
+| single-shot | 0/5 (0%) | 0/5 (0%) | 11.90 | 1570 | 100.0% | 0 |
 
 The pilot outcome is descriptive only. The reported confidence intervals in
 `summary.csv` should not be interpreted as evidence that any strategy is
